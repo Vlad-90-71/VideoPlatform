@@ -4,22 +4,28 @@ namespace FileService.Worker.Workers;
 
 public class VideoProcessingWorker(
     IRabbitMqService rabbitMqService,
-    IVideoProcessingService videoProcessingService,
+    IServiceScopeFactory scopeFactory,
     ILogger<VideoProcessingWorker> logger) : BackgroundService
 {
     private readonly IRabbitMqService _rabbitMqService = rabbitMqService;
-    private readonly IVideoProcessingService _videoProcessingService = videoProcessingService;
+    private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
     private readonly ILogger<VideoProcessingWorker> _logger = logger;
 
-    protected override Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Video Processing Worker started");
 
-        _rabbitMqService.ConsumeProcessVideoQueue(async command =>
+        // ✅ Правильное имя метода: ConsumeProcessVideoQueueAsync
+        await _rabbitMqService.ConsumeProcessVideoQueueAsync(async command =>
         {
+            // Создаём scope для каждого сообщения из очереди
+            using var scope = _scopeFactory.CreateScope();
+            var videoProcessingService = scope.ServiceProvider.GetRequiredService<IVideoProcessingService>();
+
             try
             {
-                await _videoProcessingService.ProcessVideoAsync(command);
+                await videoProcessingService.ProcessVideoAsync(command);
+                _logger.LogInformation("Successfully processed video {VideoId}", command.VideoId);
             }
             catch (Exception ex)
             {
@@ -27,7 +33,8 @@ public class VideoProcessingWorker(
             }
         });
 
-        return Task.CompletedTask;
+        // ✅ Ждём сигнала остановки
+        await Task.Delay(Timeout.Infinite, stoppingToken);
     }
 
     public override Task StopAsync(CancellationToken cancellationToken)

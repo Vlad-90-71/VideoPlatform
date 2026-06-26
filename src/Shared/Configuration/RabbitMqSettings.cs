@@ -3,13 +3,10 @@
 public class RabbitMqSettings
 {
     public const string SectionName = "RabbitMQ";
-    
-    public string Host { get; set; } = "localhost";
+
+    public string Host { get; set; } = "rabbitmq";
     public int Port { get; set; } = 5672;
-    public string Username { get; set; } = "guest";
-    public string Password { get; set; } = "guest";
+    public string Username { get; set; } = "vp_rabbit";
+    public string Password { get; set; } = "vp_rabbit_secret";
     public string VirtualHost { get; set; } = "/";
-    
-    public string ProcessVideoQueue { get; set; } = "video.process";
-    public string VideoProgressQueue { get; set; } = "video.progress";
 }

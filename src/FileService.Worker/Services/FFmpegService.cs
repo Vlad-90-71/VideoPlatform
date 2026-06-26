@@ -3,9 +3,12 @@ using System.Text.RegularExpressions;
 
 namespace FileService.Worker.Services;
 
-public class FFmpegService(ILogger<FFmpegService> logger) : IFFmpegService
+public partial class FFmpegService(ILogger<FFmpegService> logger) : IFFmpegService
 {
     private readonly ILogger<FFmpegService> _logger = logger;
+
+    [GeneratedRegex(@"time=(\d{2}):(\d{2}):(\d{2})\.?(\d{0,2})")]
+    private static partial Regex ProgressRegex();
 
     public async Task<string> ConvertToHlsAsync(string inputPath, string outputDir, IProgress<int>? progress = null)
     {
@@ -49,14 +52,15 @@ public class FFmpegService(ILogger<FFmpegService> logger) : IFFmpegService
         using var process = new Process { StartInfo = processStartInfo };
 
         // Regex для парсинга времени прогресса: time=HH:MM:SS.ms
-        var progressRegex = new Regex(@"time=(\d{2}):(\d{2}):(\d{2})\.?(\d{0,2})");
+        //var progressRegex = new Regex(@"time=(\d{2}):(\d{2}):(\d{2})\.?(\d{0,2})");
+        var regex = ProgressRegex(); // ← Используем сгенерированный Regex
         var lastReportedProgress = 0;
 
         process.ErrorDataReceived += (sender, e) =>
         {
             if (string.IsNullOrEmpty(e.Data)) return;
 
-            var match = progressRegex.Match(e.Data);
+            var match = regex.Match(e.Data);
             if (match.Success && duration > 0)
             {
                 var hours = int.Parse(match.Groups[1].Value);

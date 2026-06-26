@@ -1,55 +1,28 @@
-# ============================================================
-# Build stage
-# ============================================================
+# См. статью по ссылке https://aka.ms/customizecontainer, чтобы узнать как настроить контейнер отладки и как Visual Studio использует этот Dockerfile для создания образов для ускорения отладки.
+
+# Этот этап используется при запуске из VS в быстром режиме (по умолчанию для конфигурации отладки)
+FROM mcr.microsoft.com/dotnet/runtime:8.0 AS base
+USER $APP_UID
+WORKDIR /app
+
+# Этот этап используется для сборки проекта службы
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
-
 COPY ["src/Shared/Shared.csproj", "src/Shared/"]
 COPY ["src/FileService.Worker/FileService.Worker.csproj", "src/FileService.Worker/"]
-RUN dotnet restore "src/FileService.Worker/FileService.Worker.csproj"
-
-COPY src/Shared/ src/Shared/
-COPY src/FileService.Worker/ src/FileService.Worker/
-
+RUN dotnet restore "./src/FileService.Worker/FileService.Worker.csproj"
+COPY . .
 WORKDIR "/src/src/FileService.Worker"
-RUN dotnet build "FileService.Worker.csproj" -c $BUILD_CONFIGURATION -o /app/build && \
-    dotnet publish "FileService.Worker.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
+RUN dotnet build "./FileService.Worker.csproj" -c $BUILD_CONFIGURATION -o /app/build
 
-# ============================================================
-# Runtime stage с FFmpeg
-# ============================================================
-FROM mcr.microsoft.com/dotnet/runtime:8.0 AS runtime
+# Этот этап используется для публикации проекта службы, который будет скопирован на последний этап
+FROM build AS publish
+ARG BUILD_CONFIGURATION=Release
+RUN dotnet publish "./FileService.Worker.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        ffmpeg \
-        curl \
-        procps \
-        ca-certificates && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-RUN ffmpeg -version
-
-RUN addgroup --system --gid 1000 appgroup && \
-    adduser --system --uid 1000 --ingroup appgroup appuser
-
+# Этот этап используется в рабочей среде или при запуске из VS в обычном режиме (по умолчанию, когда конфигурация отладки не используется)
+FROM base AS final
 WORKDIR /app
-
-COPY --from=build --chown=appuser:appgroup /app/publish .
-
-RUN mkdir -p /tmp/video-processing/input \
-             /tmp/video-processing/output \
-             /tmp/video-processing/chunks && \
-    chown -R appuser:appgroup /tmp/video-processing
-
-ENV DOTNET_ENVIRONMENT=Development
-ENV FFmpeg__TempFolder=/tmp/video-processing
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD pgrep -f "FileService.Worker.dll" || exit 1
-
-USER appuser
-
+COPY --from=publish /app/publish .
 ENTRYPOINT ["dotnet", "FileService.Worker.dll"]

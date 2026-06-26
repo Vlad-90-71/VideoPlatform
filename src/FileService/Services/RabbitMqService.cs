@@ -8,52 +8,57 @@ using Microsoft.Extensions.Options;
 
 namespace FileService.Services;
 
-public class RabbitMqService : IRabbitMqService, IAsyncDisposable
+public class RabbitMqService(IOptions<RabbitMqSettings> settings, ILogger<RabbitMqService> logger) : IRabbitMqService, IAsyncDisposable
 {
-    private readonly IConnection _connection;
-    private readonly IChannel _channel;
-    private readonly ILogger<RabbitMqService> _logger;
+    private IConnection? _connection;
+    private IChannel? _channel;
+    private readonly RabbitMqSettings _settings = settings.Value;
+    private readonly ILogger<RabbitMqService> _logger = logger;
+    private readonly SemaphoreSlim _initLock = new(1, 1);
+    private bool _initialized;
 
-    public RabbitMqService(IOptions<RabbitMqSettings> settings, ILogger<RabbitMqService> logger)
+    private async Task EnsureInitializedAsync()
     {
-        _logger = logger;
+        if (_initialized) return;
 
-        var factory = new ConnectionFactory()
+        await _initLock.WaitAsync();
+        try
         {
-            HostName = settings.Value.Host,
-            Port = settings.Value.Port,
-            UserName = settings.Value.Username,
-            Password = settings.Value.Password,
-            VirtualHost = settings.Value.VirtualHost
-        };
+            if (_initialized) return;
 
-        _connection = factory.CreateConnectionAsync().GetAwaiter().GetResult();
-        _channel = _connection.CreateChannelAsync().GetAwaiter().GetResult();
+            _logger.LogInformation("Connecting to RabbitMQ at {Host}:{Port}", _settings.Host, _settings.Port);
 
-        InitializeAsync().GetAwaiter().GetResult();
-    }
+            var factory = new ConnectionFactory()
+            {
+                HostName = _settings.Host,
+                Port = _settings.Port,
+                UserName = _settings.Username,
+                Password = _settings.Password,
+                VirtualHost = _settings.VirtualHost
+            };
 
-    private async Task InitializeAsync()
-    {
-        await _channel.ExchangeDeclareAsync(
-            exchange: MessagingConstants.ProcessVideoExchange,
-            type: ExchangeType.Direct,
-            durable: true);
+            _connection = await factory.CreateConnectionAsync();
+            _channel = await _connection.CreateChannelAsync();
 
-        await _channel.QueueDeclareAsync(
-            queue: "video.process",
-            durable: true,
-            exclusive: false,
-            autoDelete: false);
+            // Producer создаёт только exchange (очереди создаёт consumer)
+            await _channel.ExchangeDeclareAsync(
+                exchange: MessagingConstants.ProcessVideoExchange,
+                type: ExchangeType.Direct,
+                durable: true);
 
-        await _channel.QueueBindAsync(
-            queue: "video.process",
-            exchange: MessagingConstants.ProcessVideoExchange,
-            routingKey: MessagingConstants.ProcessVideoRoutingKey);
+            _initialized = true;
+            _logger.LogInformation("Successfully connected to RabbitMQ");
+        }
+        finally
+        {
+            _initLock.Release();
+        }
     }
 
     public async Task PublishProcessVideoCommandAsync(ProcessVideoCommand command)
     {
+        await EnsureInitializedAsync();
+
         var json = JsonSerializer.Serialize(command);
         var body = Encoding.UTF8.GetBytes(json);
 
@@ -63,7 +68,7 @@ public class RabbitMqService : IRabbitMqService, IAsyncDisposable
             ContentType = "application/json"
         };
 
-        await _channel.BasicPublishAsync(
+        await _channel!.BasicPublishAsync(
             exchange: MessagingConstants.ProcessVideoExchange,
             routingKey: MessagingConstants.ProcessVideoRoutingKey,
             mandatory: false,
@@ -77,13 +82,27 @@ public class RabbitMqService : IRabbitMqService, IAsyncDisposable
     {
         if (_channel is not null)
         {
-            await _channel.CloseAsync();
+            try
+            {
+                await _channel.CloseAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error closing channel");
+            }
             await _channel.DisposeAsync();
         }
 
         if (_connection is not null)
         {
-            await _connection.CloseAsync();
+            try
+            {
+                await _connection.CloseAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error closing connection");
+            }
             await _connection.DisposeAsync();
         }
 

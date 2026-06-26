@@ -9,73 +9,100 @@ using Microsoft.Extensions.Options;
 
 namespace FileService.Worker.Services;
 
-public class RabbitMqService : IRabbitMqService, IAsyncDisposable
+public class RabbitMqService(IOptions<RabbitMqSettings> settings, ILogger<RabbitMqService> logger) : IRabbitMqService, IAsyncDisposable
 {
-    private readonly IConnection _connection;
-    private readonly IChannel _channel;
-    private readonly RabbitMqSettings _settings;
-    private readonly ILogger<RabbitMqService> _logger;
+    private IConnection? _connection;
+    private IChannel? _channel;
+    private readonly RabbitMqSettings _settings = settings.Value;
+    private readonly ILogger<RabbitMqService> _logger = logger;
+    private readonly SemaphoreSlim _initLock = new(1, 1);
+    private bool _initialized;
 
-    public RabbitMqService(IOptions<RabbitMqSettings> settings, ILogger<RabbitMqService> logger)
+    private async Task EnsureInitializedAsync()
     {
-        _settings = settings.Value;
-        _logger = logger;
+        if (_initialized) return;
 
-        var factory = new ConnectionFactory()
+        await _initLock.WaitAsync();
+        try
         {
-            HostName = _settings.Host,
-            Port = _settings.Port,
-            UserName = _settings.Username,
-            Password = _settings.Password,
-            VirtualHost = _settings.VirtualHost
-        };
+            if (_initialized) return;
 
-        _connection = factory.CreateConnectionAsync().GetAwaiter().GetResult();
-        _channel = _connection.CreateChannelAsync().GetAwaiter().GetResult();
+            _logger.LogInformation("Connecting to RabbitMQ at {Host}:{Port}", _settings.Host, _settings.Port);
 
-        InitializeExchangesAndQueuesAsync().GetAwaiter().GetResult();
+            var factory = new ConnectionFactory()
+            {
+                HostName = _settings.Host,
+                Port = _settings.Port,
+                UserName = _settings.Username,
+                Password = _settings.Password,
+                VirtualHost = _settings.VirtualHost
+            };
+
+            _connection = await factory.CreateConnectionAsync();
+            _channel = await _connection.CreateChannelAsync();
+
+            // Инициализируем exchange и очереди
+            await InitializeExchangesAndQueuesAsync();
+
+            _initialized = true;
+            _logger.LogInformation("Successfully connected to RabbitMQ");
+        }
+        finally
+        {
+            _initLock.Release();
+        }
     }
 
     private async Task InitializeExchangesAndQueuesAsync()
     {
+        // Гарантируем, что канал не null
+        if (_channel is null)
+        {
+            throw new InvalidOperationException("RabbitMQ channel is not initialized");
+        }
+
+        // === ProcessVideo: Direct exchange ===
         await _channel.ExchangeDeclareAsync(
             exchange: MessagingConstants.ProcessVideoExchange,
             type: ExchangeType.Direct,
             durable: true);
 
         await _channel.QueueDeclareAsync(
-            queue: _settings.ProcessVideoQueue,
+            queue: MessagingConstants.ProcessVideoQueue,
             durable: true,
             exclusive: false,
             autoDelete: false);
 
         await _channel.QueueBindAsync(
-            queue: _settings.ProcessVideoQueue,
+            queue: MessagingConstants.ProcessVideoQueue,
             exchange: MessagingConstants.ProcessVideoExchange,
             routingKey: MessagingConstants.ProcessVideoRoutingKey);
 
+        // === VideoProgress: Fanout exchange ===
         await _channel.ExchangeDeclareAsync(
             exchange: MessagingConstants.VideoProgressExchange,
             type: ExchangeType.Fanout,
             durable: true);
 
         await _channel.QueueDeclareAsync(
-            queue: _settings.VideoProgressQueue,
+            queue: MessagingConstants.VideoProgressQueue,
             durable: true,
             exclusive: false,
             autoDelete: false);
 
+        // Fanout exchange ИГНОРИРУЕТ routing key
         await _channel.QueueBindAsync(
-            queue: _settings.VideoProgressQueue,
+            queue: MessagingConstants.VideoProgressQueue,
             exchange: MessagingConstants.VideoProgressExchange,
-            routingKey: MessagingConstants.VideoProgressRoutingKey);
+            routingKey: "");
     }
 
-    public void ConsumeProcessVideoQueue(Func<ProcessVideoCommand, Task> handler)
+    public async Task ConsumeProcessVideoQueueAsync(Func<ProcessVideoCommand, Task> handler)
     {
-        var consumer = new AsyncEventingBasicConsumer(_channel);
+        await EnsureInitializedAsync();
 
-        // ✅ В v7 используем ReceivedAsync вместо Received
+        var consumer = new AsyncEventingBasicConsumer(_channel!);
+
         consumer.ReceivedAsync += async (sender, ea) =>
         {
             try
@@ -88,31 +115,28 @@ public class RabbitMqService : IRabbitMqService, IAsyncDisposable
                 {
                     _logger.LogInformation("Received ProcessVideoCommand for video {VideoId}", command.VideoId);
                     await handler(command);
-                    await _channel.BasicAckAsync(deliveryTag: ea.DeliveryTag, multiple: false);
+                    await _channel!.BasicAckAsync(deliveryTag: ea.DeliveryTag, multiple: false);
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error processing message");
-                await _channel.BasicNackAsync(deliveryTag: ea.DeliveryTag, multiple: false, requeue: true);
+                await _channel!.BasicNackAsync(deliveryTag: ea.DeliveryTag, multiple: false, requeue: true);
             }
         };
 
-        _ = StartConsumerAsync(consumer);
-    }
-
-    private async Task StartConsumerAsync(AsyncEventingBasicConsumer consumer)
-    {
-        await _channel.BasicConsumeAsync(
-            queue: _settings.ProcessVideoQueue,
+        await _channel!.BasicConsumeAsync(
+            queue: MessagingConstants.ProcessVideoQueue,
             autoAck: false,
             consumer: consumer);
 
-        _logger.LogInformation("Started consuming from queue {Queue}", _settings.ProcessVideoQueue);
+        _logger.LogInformation("Started consuming from queue {Queue}", MessagingConstants.ProcessVideoQueue);
     }
 
     public async Task PublishVideoProgressAsync(VideoProgressEvent progressEvent)
     {
+        await EnsureInitializedAsync();
+
         var json = JsonSerializer.Serialize(progressEvent);
         var body = Encoding.UTF8.GetBytes(json);
 
@@ -122,9 +146,10 @@ public class RabbitMqService : IRabbitMqService, IAsyncDisposable
             ContentType = "application/json"
         };
 
-        await _channel.BasicPublishAsync(
+        // Fanout exchange — routing key не важен
+        await _channel!.BasicPublishAsync(
             exchange: MessagingConstants.VideoProgressExchange,
-            routingKey: MessagingConstants.VideoProgressRoutingKey,
+            routingKey: "",
             mandatory: false,
             basicProperties: properties,
             body: body);

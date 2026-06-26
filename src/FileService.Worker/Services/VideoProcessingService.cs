@@ -59,7 +59,6 @@ public class VideoProcessingService(
 
             // Загружаем HLS файлы в MinIO
             _logger.LogInformation("Uploading HLS files for video {VideoId} to MinIO", command.VideoId);
-            var hlsBucket = "video-hls";
             var hlsBasePath = $"{command.VideoId}/hls";
 
             // Загружаем playlist
