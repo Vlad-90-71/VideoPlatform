@@ -1,17 +1,14 @@
-﻿using FileService.Models;
+﻿using Microsoft.AspNetCore.Mvc;
 using FileService.Services;
-using Microsoft.AspNetCore.Mvc;
-using Shared.Models;
 
 namespace FileService.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class VideoController(IVideoService videoService, ILogger<VideoController> logger) : ControllerBase
+public class VideoController(IMinioService minioService, ILogger<VideoController> logger) : ControllerBase
 {
-    private readonly IVideoService _videoService = videoService;
+    private readonly IMinioService _minioService = minioService;
     private readonly ILogger<VideoController> _logger = logger;
-
 
     // ✅ Новый endpoint — инициализация загрузки и получение presigned URLs
     [HttpPost("upload/init")]
@@ -28,7 +25,7 @@ public class VideoController(IVideoService videoService, ILogger<VideoController
             for (int i = 0; i < request.TotalChunks; i++)
             {
                 var objectName = $"{videoId}/chunks/chunk_{i:D6}";
-                var presignedUrl = await _videoService.GetPresignedUploadUrlAsync(objectName);
+                var presignedUrl = await _minioService.GetPresignedUploadUrlAsync(objectName, "application/octet-stream");
 
                 uploadUrls.Add(new ChunkUploadUrlDto(i, presignedUrl));
             }
@@ -74,42 +71,6 @@ public class VideoController(IVideoService videoService, ILogger<VideoController
         string UploadUrl
     );
 
-    [HttpPost("upload/chunk")]
-    [RequestSizeLimit(2L * 1024 * 1024 * 1024)]
-    [RequestFormLimits(MultipartBodyLengthLimit = 2L * 1024 * 1024 * 1024)]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> UploadChunk([FromForm] ChunkUploadRequest request)
-    {
-        try
-        {
-            var progress = await _videoService.UploadChunkAsync(request);
-            return Ok(progress);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error uploading chunk for video {VideoId}", request.VideoId);
-            return BadRequest(new { error = ex.Message });
-        }
-    }
-
-    [HttpPost("upload/complete")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> CompleteUpload([FromBody] UploadCompleteRequest request)
-    {
-        try
-        {
-            var metadata = await _videoService.CompleteUploadAsync(request);
-            return Ok(metadata);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error completing upload for video {VideoId}", request.VideoId);
-            return BadRequest(new { error = ex.Message });
-        }
-    }
-
     // ✅ Оставили только один метод
     [HttpGet("{videoId}")]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -118,7 +79,7 @@ public class VideoController(IVideoService videoService, ILogger<VideoController
     {
         try
         {
-            var videoInfo = await _videoService.GetVideoInfoAsync(videoId);
+            var videoInfo = await _minioService.GetVideoInfoAsync(videoId);
 
             if (videoInfo == null)
             {
@@ -140,7 +101,7 @@ public class VideoController(IVideoService videoService, ILogger<VideoController
     {
         try
         {
-            var videos = await _videoService.GetAllVideosAsync();
+            var videos = await _minioService.GetAllVideosAsync();
             return Ok(videos);
         }
         catch (Exception ex)

@@ -8,9 +8,15 @@ namespace WebApp.Controllers;
 
 // ✅ ДОБАВЬТЕ: явный маршрут для контроллера
 [Route("[controller]")]
-public class VideosController(IFileServiceClient fileService, ILogger<VideosController> logger) : Controller
+public class VideosController(
+    IFileServiceClient fileService, 
+    IVideoService videoService, 
+    IVideoProgressCache progressCache, 
+    ILogger<VideosController> logger) : Controller
 {
     private readonly IFileServiceClient _fileService = fileService;
+    private readonly IVideoService _videoService = videoService;
+    private readonly IVideoProgressCache _progressCache = progressCache;
     private readonly ILogger<VideosController> _logger = logger;
 
     // ✅ ИСПРАВЛЕНО: явный маршрут для GET
@@ -52,30 +58,6 @@ public class VideosController(IFileServiceClient fileService, ILogger<VideosCont
     }
 
     // ✅ ИСПРАВЛЕНО: явный маршрут
-    [HttpPost("UploadChunk")]
-    [RequestSizeLimit(AppConstants.MaxFileSizeBytes)]
-    public async Task<IActionResult> UploadChunk(IFormFile file, Guid videoId, int chunkIndex, int totalChunks)
-    {
-        try
-        {
-            using var stream = file.OpenReadStream();
-            var progress = await _fileService.UploadChunkAsync(videoId, file.FileName, chunkIndex, totalChunks, stream);
-
-            return Ok(new
-            {
-                success = true,
-                progress = progress.ProgressPercentage,
-                isCompleted = progress.IsCompleted
-            });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error uploading chunk {ChunkIndex} for video {VideoId}", chunkIndex, videoId);
-            return BadRequest(new { success = false, error = ex.Message });
-        }
-    }
-
-    // ✅ ИСПРАВЛЕНО: явный маршрут
     [HttpPost("CompleteUpload")]
     [Consumes("application/json")]
     [Produces("application/json")]
@@ -83,7 +65,12 @@ public class VideosController(IFileServiceClient fileService, ILogger<VideosCont
     {
         try
         {
-            var metadata = await _fileService.CompleteUploadAsync(request.VideoId, request.FileName, request.TotalChunks);
+            // ✅ Вызываем VideoService в WebApp (не FileService!)
+            var metadata = await _videoService.CompleteUploadAsync(
+                request.VideoId,
+                request.FileName,
+                request.TotalChunks);
+            
             return Ok(new { success = true, videoId = metadata.VideoId });
         }
         catch (Exception ex)
@@ -94,20 +81,27 @@ public class VideosController(IFileServiceClient fileService, ILogger<VideosCont
     }
 
     [HttpGet("Watch/{videoId}")]
-    public async Task<IActionResult> Watch(Guid videoId)
+    public IActionResult Watch(Guid videoId)
     {
         try
         {
-            var videoInfo = await _fileService.GetVideoInfoAsync(videoId);
+            // ✅ Используем кэш прогресса вместо FileService
+            var progress = _progressCache.GetProgress(videoId);
 
-            if (videoInfo == null || string.IsNullOrEmpty(videoInfo.HlsPlaylistUrl))
+            if (progress == null)
             {
-                return NotFound("Видео не найдено или ещё не обработано");
+                // Если прогресса нет — показываем страницу с ожиданием
+                ViewBag.VideoId = videoId;
+                ViewBag.HlsPlaylistUrl = null;
+                ViewBag.FileName = "Обработка видео...";
+                return View();
             }
 
             ViewBag.VideoId = videoId;
-            ViewBag.HlsPlaylistUrl = videoInfo.HlsPlaylistUrl;
-            ViewBag.FileName = videoInfo.FileName;
+            ViewBag.HlsPlaylistUrl = progress.HlsPlaylistUrl;
+            ViewBag.FileName = "Видео - " + videoId.ToString();
+            ViewBag.ProgressPercentage = progress.ProgressPercentage;
+            ViewBag.Status = (int)progress.Status;
 
             return View();
         }
@@ -118,6 +112,42 @@ public class VideosController(IFileServiceClient fileService, ILogger<VideosCont
         }
     }
 
+    [HttpGet("GetVideoStatus/{videoId}")]
+    public IActionResult GetVideoStatus(Guid videoId)
+    {
+        try
+        {
+            var progress = _progressCache.GetProgress(videoId);
+
+            if (progress == null)
+            {
+                return Ok(new
+                {
+                    isCompleted = false,
+                    progressPercentage = 0,
+                    status = 0
+                });
+            }
+
+            return Ok(new
+            {
+                isCompleted = progress.Status == Shared.Messaging.VideoProcessingStatus.Completed,
+                progressPercentage = progress.ProgressPercentage,
+                status = (int)progress.Status,
+                hlsPlaylistUrl = progress.HlsPlaylistUrl
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting video status for {VideoId}", videoId);
+            return Ok(new
+            {
+                isCompleted = false,
+                progressPercentage = 0,
+                status = 0
+            });
+        }
+    }
     // ✅ ИСПРАВЛЕНО: явный маршрут для Index
     [HttpGet("")]
     [HttpGet("Index")]

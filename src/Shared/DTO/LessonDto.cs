@@ -16,6 +16,7 @@ public enum VideoStatus
 {
     Uploading,
     Processing,
+    Completed,
     Ready,
     Failed
 }

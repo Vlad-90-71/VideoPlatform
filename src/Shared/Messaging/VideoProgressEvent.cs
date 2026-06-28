@@ -10,10 +10,18 @@ public class VideoProgressEvent
     public DateTime Timestamp { get; set; }
 }
 
-public enum VideoProcessingStatus
+public enum VideoProcessingStatus1
 {
     Started,
     Processing,
     Completed,
     Failed
+}
+public enum VideoProcessingStatus
+{
+    NotStarted = 0,
+    Started = 1,
+    Processing = 2,
+    Completed = 3,  // ✅ Должно быть 3, а не 2!
+    Failed = 4
 }

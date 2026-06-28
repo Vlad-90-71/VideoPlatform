@@ -7,16 +7,19 @@ using Shared.Configuration;
 using Shared.Constants;
 using Shared.Messaging;
 using WebApp.Hubs;
+using WebApp.Services;
 
 namespace WebApp.Workers;
 
 public class VideoProgressWorker(
     IServiceProvider serviceProvider,
     IConfiguration configuration,
+    IVideoProgressCache progressCache,  // ✅ Добавлен кэш
     ILogger<VideoProgressWorker> logger) : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider = serviceProvider;
     private readonly RabbitMqSettings _settings = configuration.GetSection(RabbitMqSettings.SectionName).Get<RabbitMqSettings>()!;
+    private readonly IVideoProgressCache _progressCache = progressCache;  // ✅ Добавлено
     private readonly ILogger<VideoProgressWorker> _logger = logger;
     private IConnection? _connection;
     private IChannel? _channel;
@@ -55,7 +58,7 @@ public class VideoProgressWorker(
         await _channel.QueueBindAsync(
             queue: MessagingConstants.VideoProgressQueue,
             exchange: MessagingConstants.VideoProgressExchange,
-            routingKey: "");  // Fanout exchange игнорирует routing key
+            routingKey: "");
 
         _logger.LogInformation("Connected to RabbitMQ and declared queue {Queue}", MessagingConstants.VideoProgressQueue);
     }
@@ -83,12 +86,12 @@ public class VideoProgressWorker(
                     _logger.LogInformation("Received progress event for video {VideoId}: {Progress}%",
                         progressEvent.VideoId, progressEvent.ProgressPercentage);
 
+                    // ✅ СОХРАНЯЕМ прогресс в кэш
+                    _progressCache.UpdateProgress(progressEvent);
+
                     using var scope = _serviceProvider.CreateScope();
                     var hubContext = scope.ServiceProvider.GetRequiredService<IHubContext<VideoProgressHub>>();
 
-                    // ✅ ИСПРАВЛЕНО:
-                    // 1. Имя события "ReceiveProgress" (совпадает с JavaScript)
-                    // 2. Отправляем всем клиентам (Clients.All)
                     await hubContext.Clients.All
                         .SendAsync("ReceiveProgress", progressEvent, stoppingToken);
 

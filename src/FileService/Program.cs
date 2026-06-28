@@ -45,8 +45,6 @@ builder.Services.AddMinio(configureClient => configureClient
 
 // Services
 builder.Services.AddScoped<IMinioService, MinioService>();
-builder.Services.AddSingleton<IRabbitMqService, RabbitMqService>();
-builder.Services.AddScoped<IVideoService, VideoService>();
 
 // CORS
 builder.Services.AddCors(options =>

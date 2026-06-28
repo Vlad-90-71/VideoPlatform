@@ -23,6 +23,9 @@ builder.Services.AddHttpClient<ILessonServiceClient, LessonServiceClient>(client
     client.BaseAddress = new Uri(baseUrl ?? "http://lessonservice:8080");
 });
 
+builder.Services.AddScoped<IVideoService, VideoService>();
+builder.Services.AddSingleton<IVideoProgressCache, VideoProgressCache>();
+
 // Background Worker
 builder.Services.AddHostedService<VideoProgressWorker>();
 

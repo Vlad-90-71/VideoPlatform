@@ -160,6 +160,11 @@ services:
       - Storage__UseSSL=true
       - Storage__VideoStorageBucket=video-storage
       - Storage__VideoHlsBucket=video-hls
+      - RabbitMq__Host=rabbitmq
+      - RabbitMq__Port=5672
+      - RabbitMq__Username=vp_rabbit
+      - RabbitMq__Password=vp_rabbit_secret
+      - RabbitMq__VirtualHost=/
     ports:
       - "5000:8080"
       - "5001:8081"

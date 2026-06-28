@@ -1,82 +1,169 @@
 ﻿@{
     ViewData["Title"] = "Просмотр видео";
     var videoId = ViewBag.VideoId;
-    var hlsPlaylistUrl = ViewBag.HlsPlaylistUrl;
-    var fileName = ViewBag.FileName;
+    var hlsUrl = ViewBag.HlsPlaylistUrl;
+    var fileName = ViewBag.FileName ?? "Видео";
+    var progressPercentage = ViewBag.ProgressPercentage ?? 0;
+    var status = ViewBag.Status ?? 0;
 }
 
 <div class="container mt-4">
     <h1 class="mb-4">@fileName</h1>
 
-    <div class="row">
-        <div class="col-12">
-            <div class="card">
-                <div class="card-body">
-                    <video id="videoPlayer" controls autoplay style="width: 100%; max-height: 600px; background: #000;">
-                        Ваш браузер не поддерживает воспроизведение видео.
-                    </video>
+    <!-- Прогресс обработки -->
+    <div id="processingContainer" class="card mb-4">
+        <div class="card-header bg-warning text-dark">
+            <h5 class="mb-0">
+                <i class="bi bi-gear-fill"></i> Обработка видео
+            </h5>
+        </div>
+        <div class="card-body">
+            <div class="progress" style="height: 30px;">
+                <div id="processingProgressBar"
+                     class="progress-bar progress-bar-striped progress-bar-animated bg-info"
+                     role="progressbar"
+                     style="width: @progressPercentage%">
+                    @progressPercentage%
                 </div>
             </div>
+            <div class="mt-2">
+                <span id="processingStatus" class="text-muted">Ожидание...</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Плеер (скрыт до завершения) -->
+    <div id="playerContainer" class="card" style="display: none;">
+        <div class="card-header bg-success text-white">
+            <h5 class="mb-0">
+                <i class="bi bi-play-circle"></i> Видео готово к просмотру
+            </h5>
+        </div>
+        <div class="card-body">
+            <video id="videoPlayer" controls style="width: 100%;"></video>
+        </div>
+    </div>
+
+    <!-- Ошибка -->
+    <div id="errorContainer" class="card" style="display: none;">
+        <div class="card-header bg-danger text-white">
+            <h5 class="mb-0">
+                <i class="bi bi-exclamation-triangle"></i> Ошибка обработки
+            </h5>
+        </div>
+        <div class="card-body">
+            <p id="errorMessage" class="mb-0"></p>
         </div>
     </div>
 
     <div class="mt-3">
         <a href="@Url.Action("Index", "Videos")" class="btn btn-secondary">
-            <i class="bi bi-arrow-left"></i> Назад к списку видео
+            <i class="bi bi-arrow-left"></i> Назад к списку
         </a>
     </div>
 </div>
 
 @section Scripts {
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            const video = document.getElementById('videoPlayer');
-            const playlistUrl = '/video-hls/@hlsPlaylistUrl';  // Проксируется через Nginx
+        const videoId = '@videoId';
 
-            console.log('HLS Playlist URL:', playlistUrl);
+        // ✅ Статусы из enum VideoProcessingStatus
+        const Status = {
+            NotStarted: 0,
+            Started: 1,
+            Processing: 2,
+            Completed: 3,
+            Failed: 4
+        };
 
-            if (Hls.isSupported()) {
-                const hls = new Hls({
-                    debug: false
-                });
+        // Подключение к SignalR
+        const connection = new signalR.HubConnectionBuilder()
+            .withUrl("/videoProgressHub")
+            .withAutomaticReconnect()
+            .build();
 
-                hls.loadSource(playlistUrl);
-                hls.attachMedia(video);
+        connection.on("ReceiveProgress", (progressEvent) => {
+            console.log("Progress received:", progressEvent);
 
-                hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                    console.log('HLS manifest loaded, ready to play');
-                    video.play().catch(e => console.error('Autoplay failed:', e));
-                });
+            if (progressEvent.videoId === videoId) {
+                updateProcessingProgress(progressEvent.progressPercentage, progressEvent.status);
 
-                hls.on(Hls.Events.ERROR, function(event, data) {
-                    console.error('HLS error:', data);
-                    if (data.fatal) {
-                        switch(data.type) {
-                            case Hls.ErrorTypes.NETWORK_ERROR:
-                                console.log('Fatal network error, trying to recover...');
-                                hls.startLoad();
-                                break;
-                            case Hls.ErrorTypes.MEDIA_ERROR:
-                                console.log('Fatal media error, trying to recover...');
-                                hls.recoverMediaError();
-                                break;
-                            default:
-                                console.log('Fatal error, cannot recover');
-                                hls.destroy();
-                                break;
-                        }
-                    }
-                });
-            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                // Для Safari (нативная поддержка HLS)
-                video.src = playlistUrl;
-                video.addEventListener('loadedmetadata', function() {
-                    video.play();
-                });
-            } else {
-                alert('Ваш браузер не поддерживает воспроизведение HLS видео');
+                if (progressEvent.status === Status.Completed) {
+                    showPlayer(progressEvent.hlsPlaylistUrl);
+                } else if (progressEvent.status === Status.Failed) {
+                    showError(progressEvent.errorMessage || 'Неизвестная ошибка');
+                }
             }
         });
+
+        connection.start()
+            .then(() => {
+                console.log("✅ Connected to SignalR hub");
+                return connection.invoke("JoinVideoGroup", videoId);
+            })
+            .catch(err => console.error("SignalR error:", err));
+
+        function updateProcessingProgress(percentage, status) {
+            const progressBar = document.getElementById('processingProgressBar');
+            const statusText = document.getElementById('processingStatus');
+
+            if (progressBar) {
+                progressBar.style.width = `${percentage}%`;
+                progressBar.textContent = `${percentage}%`;
+            }
+
+            if (statusText) {
+                const statusMap = {
+                    [Status.NotStarted]: 'Ожидание...',
+                    [Status.Started]: 'Начата обработка',
+                    [Status.Processing]: 'Конвертация в HLS...',
+                    [Status.Completed]: 'Обработка завершена!',
+                    [Status.Failed]: 'Ошибка обработки'
+                };
+                statusText.textContent = statusMap[status] || 'Обработка...';
+            }
+        }
+
+        function showPlayer(playlistUrl) {
+            document.getElementById('processingContainer').style.display = 'none';
+            document.getElementById('errorContainer').style.display = 'none';
+
+            const playerContainer = document.getElementById('playerContainer');
+            playerContainer.style.display = 'block';
+
+            const video = document.getElementById('videoPlayer');
+            const fullUrl = `/video-hls/${playlistUrl}`;
+
+            if (Hls.isSupported()) {
+                const hls = new Hls();
+                hls.loadSource(fullUrl);
+                hls.attachMedia(video);
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = fullUrl;
+            }
+        }
+
+        function showError(message) {
+            document.getElementById('processingContainer').style.display = 'none';
+            document.getElementById('errorContainer').style.display = 'block';
+            document.getElementById('errorMessage').textContent = message;
+        }
+
+        // Проверяем текущий статус
+        fetch(`/Videos/GetVideoStatus/${videoId}`)
+            .then(response => response.json())
+            .then(data => {
+                console.log("Initial status:", data);
+                updateProcessingProgress(data.progressPercentage, data.status);
+
+                if (data.isCompleted && data.hlsPlaylistUrl) {
+                    showPlayer(data.hlsPlaylistUrl);
+                } else if (data.status === Status.Failed) {
+                    showError('Обработка видео не удалась');
+                }
+            })
+            .catch(err => console.error("Error checking status:", err));
     </script>
 }

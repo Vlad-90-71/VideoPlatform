@@ -8,7 +8,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     if (uploadForm) {
         uploadForm.addEventListener('submit', async function (e) {
-            e.preventDefault(); // Предотвращаем стандартное поведение формы
+            e.preventDefault();
 
             const fileInput = document.getElementById('videoFile');
             const file = fileInput.files[0];
@@ -18,13 +18,11 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
 
-            // Проверка размера файла
             if (file.size > window.AppConfig.MaxFileSizeBytes) {
                 alert(`Файл слишком большой. Максимальный размер: ${window.AppConfig.MaxFileSizeMB} MB`);
                 return;
             }
 
-            // Показываем прогресс-бар
             progressContainer.style.display = 'block';
             resultMessage.innerHTML = '';
 
@@ -47,7 +45,6 @@ document.addEventListener('DOMContentLoaded', function () {
 async function uploadVideo(file) {
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
 
-    // ✅ Шаг 1: Инициализация загрузки и получение presigned URLs
     updateProgress(0, 0, totalChunks, 'Инициализация...');
 
     const initResponse = await fetch('/Videos/InitUpload', {
@@ -69,12 +66,10 @@ async function uploadVideo(file) {
     const { videoId, uploadUrls } = await initResponse.json();
     console.log(`✅ Initialized upload for video ${videoId}`);
 
-    // ✅ Шаг 2: Загрузка чанков НАПРЯМУЮ в MinIO
     for (let i = 0; i < totalChunks; i++) {
         const chunk = file.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
         const uploadUrl = uploadUrls[i].uploadUrl;
 
-        // Прямая загрузка в MinIO через presigned URL
         const response = await fetch(uploadUrl, {
             method: 'PUT',
             body: chunk,
@@ -87,13 +82,11 @@ async function uploadVideo(file) {
             throw new Error(`Failed to upload chunk ${i}`);
         }
 
-        // Обновляем прогресс
         const percentage = Math.round(((i + 1) / totalChunks) * 100);
         updateProgress(percentage, i + 1, totalChunks, 'Загрузка...');
     }
 
-    // ✅ Шаг 3: Завершение загрузки
-    updateProgress(100, totalChunks, totalChunks, 'Завершение...');
+    updateProgress(100, totalChunks, totalChunks, 'Завершение загрузки...');
 
     const completeResponse = await fetch('/Videos/CompleteUpload', {
         method: 'POST',
@@ -116,14 +109,14 @@ async function uploadVideo(file) {
     resultMessage.innerHTML = `
         <div class="alert alert-success">
             <i class="bi bi-check-circle"></i>
-            Видео успешно загружено!
+            Видео загружено! Перенаправление на страницу обработки...
         </div>
     `;
 
-    // Перенаправление через 2 секунды
+    // ✅ ИЗМЕНЕНО: Перенаправляем на страницу Watch с прогрессом обработки
     setTimeout(() => {
-        window.location.href = '/Videos/Index';
-    }, 2000);
+        window.location.href = `/Videos/Watch/${videoId}`;
+    }, 1500);
 }
 
 function updateProgress(percentage, uploadedChunks, totalChunks, status) {
