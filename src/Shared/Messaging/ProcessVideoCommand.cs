@@ -6,5 +6,6 @@ public class ProcessVideoCommand
     public string BucketName { get; set; } = string.Empty;
     public string ObjectName { get; set; } = string.Empty;
     public string OriginalFileName { get; set; } = string.Empty;
+    public int TotalChunks { get; set; }
     public DateTime CreatedAt { get; set; }
 }

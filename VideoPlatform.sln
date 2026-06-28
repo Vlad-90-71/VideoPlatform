@@ -8,6 +8,9 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FileService", "src\FileService\FileService.csproj", "{1E145A08-C430-4867-9F94-8C1046B03B87}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LessonService", "src\LessonService\LessonService.csproj", "{F98EBBDB-A16B-4EDD-846D-0DA10895CDD5}"
+	ProjectSection(ProjectDependencies) = postProject
+		{77FAB888-063C-4BDB-A427-1B98EAAA9502} = {77FAB888-063C-4BDB-A427-1B98EAAA9502}
+	EndProjectSection
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shared", "src\Shared\Shared.csproj", "{77FAB888-063C-4BDB-A427-1B98EAAA9502}"
 EndProject

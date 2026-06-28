@@ -1,0 +1,82 @@
+﻿@{
+    ViewData["Title"] = "Просмотр видео";
+    var videoId = ViewBag.VideoId;
+    var hlsPlaylistUrl = ViewBag.HlsPlaylistUrl;
+    var fileName = ViewBag.FileName;
+}
+
+<div class="container mt-4">
+    <h1 class="mb-4">@fileName</h1>
+
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body">
+                    <video id="videoPlayer" controls autoplay style="width: 100%; max-height: 600px; background: #000;">
+                        Ваш браузер не поддерживает воспроизведение видео.
+                    </video>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-3">
+        <a href="@Url.Action("Index", "Videos")" class="btn btn-secondary">
+            <i class="bi bi-arrow-left"></i> Назад к списку видео
+        </a>
+    </div>
+</div>
+
+@section Scripts {
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const video = document.getElementById('videoPlayer');
+            const playlistUrl = '/video-hls/@hlsPlaylistUrl';  // Проксируется через Nginx
+
+            console.log('HLS Playlist URL:', playlistUrl);
+
+            if (Hls.isSupported()) {
+                const hls = new Hls({
+                    debug: false
+                });
+
+                hls.loadSource(playlistUrl);
+                hls.attachMedia(video);
+
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    console.log('HLS manifest loaded, ready to play');
+                    video.play().catch(e => console.error('Autoplay failed:', e));
+                });
+
+                hls.on(Hls.Events.ERROR, function(event, data) {
+                    console.error('HLS error:', data);
+                    if (data.fatal) {
+                        switch(data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                console.log('Fatal network error, trying to recover...');
+                                hls.startLoad();
+                                break;
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                console.log('Fatal media error, trying to recover...');
+                                hls.recoverMediaError();
+                                break;
+                            default:
+                                console.log('Fatal error, cannot recover');
+                                hls.destroy();
+                                break;
+                        }
+                    }
+                });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Для Safari (нативная поддержка HLS)
+                video.src = playlistUrl;
+                video.addEventListener('loadedmetadata', function() {
+                    video.play();
+                });
+            } else {
+                alert('Ваш браузер не поддерживает воспроизведение HLS видео');
+            }
+        });
+    </script>
+}

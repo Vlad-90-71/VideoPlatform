@@ -3,6 +3,27 @@
 }
 
 <div class="text-center">
-    <h1 class="display-4">Welcome4</h1>
-    <p>Learn about <a href="https://learn.microsoft.com/aspnet/core">building Web apps with ASP.NET Core</a>.</p>
+    <h1 class="display-4">Video Platform</h1>
+    <p class="lead">Загружайте и смотрите видеоуроки</p>
+    
+    <div class="row mt-5">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Загрузить видео</h5>
+                    <p class="card-text">Загрузите видеофайл для обработки</p>
+                    <a href="@Url.Action("Upload", "Videos")" class="btn btn-primary">Загрузить видео</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Список уроков</h5>
+                    <p class="card-text">Просмотр всех доступных уроков</p>
+                    <a href="@Url.Action("Index", "Lessons")" class="btn btn-success">Открыть уроки</a>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>

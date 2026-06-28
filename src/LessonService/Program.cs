@@ -1,9 +1,12 @@
+п»їusing LessonService.Data;
+using LessonService.Services;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.OpenApi.Models;
-using System.Reflection;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services
+// Add services to the container.
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
@@ -12,44 +15,45 @@ builder.Services.AddSwaggerGen(c =>
     {
         Title = "LessonService API",
         Version = "v1",
-        Description = "API для управления уроками в VideoPlatform",
+        Description = "API РґР»СЏ СѓРїСЂР°РІР»РµРЅРёСЏ СѓСЂРѕРєР°РјРё РІ VideoPlatform",
         Contact = new OpenApiContact
         {
             Name = "VideoPlatform Team",
             Email = "support@videoplatform.local"
         }
     });
+});
 
-    // Включить XML-комментарии
-    var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
-    var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
-    if (File.Exists(xmlPath))
+// PostgreSQL
+builder.Services.AddDbContext<LessonDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// Redis Cache
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = builder.Configuration.GetConnectionString("Redis");
+    options.InstanceName = "LessonService_";
+});
+
+// Services
+builder.Services.AddScoped<ILessonService, LessonService.Services.LessonService>();
+
+// CORS
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAll", policy =>
     {
-        c.IncludeXmlComments(xmlPath);
-    }
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
+    });
 });
 
 var app = builder.Build();
 
-// Configure middleware
+// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
-    // Настроить Swagger для работы за reverse proxy
-   /* app.UseSwagger(c =>
-    {
-        c.PreSerializeFilters.Add((swagger, httpReq) =>
-        {
-            // Указать правильный сервер для Swagger UI
-            swagger.Servers = new List<OpenApiServer>
-            {
-                new OpenApiServer
-                {
-                    Url = $"https://{httpReq.Host.Value}",
-                    Description = "Production (via Nginx)"
-                }
-            };
-        });
-    });*/
     app.UseSwagger();
     app.UseSwaggerUI(c =>
     {
@@ -58,8 +62,16 @@ if (app.Environment.IsDevelopment())
     });
 }
 
-app.UseHttpsRedirection();
+//app.UseHttpsRedirection();
+app.UseCors("AllowAll");
 app.UseAuthorization();
 app.MapControllers();
+
+// РњРёРіСЂР°С†РёРё Р‘Р” РїСЂРё Р·Р°РїСѓСЃРєРµ
+using (var scope = app.Services.CreateScope())
+{
+    var dbContext = scope.ServiceProvider.GetRequiredService<LessonDbContext>();
+    dbContext.Database.Migrate();
+}
 
 app.Run();

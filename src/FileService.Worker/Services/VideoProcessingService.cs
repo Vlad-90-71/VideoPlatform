@@ -13,10 +13,13 @@ public class VideoProcessingService(
     private readonly IRabbitMqService _rabbitMqService = rabbitMqService;
     private readonly ILogger<VideoProcessingService> _logger = logger;
 
+    // ✅ Лимит параллельных операций с MinIO
+    private const int MaxParallelOperations = 10;
+
     public async Task ProcessVideoAsync(ProcessVideoCommand command)
     {
         var tempDir = Path.Combine(Path.GetTempPath(), command.VideoId.ToString());
-        
+
         try
         {
             // Отправляем начальное событие
@@ -28,22 +31,17 @@ public class VideoProcessingService(
                 Timestamp = DateTime.UtcNow
             });
 
-            // Скачиваем видео из MinIO
-            _logger.LogInformation("Downloading video {VideoId} from MinIO", command.VideoId);
-            var videoStream = await _minioService.GetObjectAsync(command.ObjectName);
-            
-            var inputPath = Path.Combine(tempDir, "input.mp4");
+            // ✅ ОБЪЕДИНЯЕМ чанки из MinIO в локальный файл
+            _logger.LogInformation("Merging chunks for video {VideoId}", command.VideoId);
             Directory.CreateDirectory(tempDir);
-            
-            using (var fileStream = new FileStream(inputPath, FileMode.Create))
-            {
-                await videoStream.CopyToAsync(fileStream);
-            }
+            var inputPath = Path.Combine(tempDir, "input.mp4");
+
+            await MergeChunksAsync(command.VideoId, command.TotalChunks, inputPath);
 
             // Конвертируем в HLS
             _logger.LogInformation("Converting video {VideoId} to HLS", command.VideoId);
             var outputDir = Path.Combine(tempDir, "hls");
-            
+
             var progress = new Progress<int>(async percentage =>
             {
                 await _rabbitMqService.PublishVideoProgressAsync(new VideoProgressEvent
@@ -57,33 +55,76 @@ public class VideoProcessingService(
 
             var playlistPath = await _ffmpegService.ConvertToHlsAsync(inputPath, outputDir, progress);
 
-            // Загружаем HLS файлы в MinIO
+            // ✅ ЗАГРУЖАЕМ HLS файлы в MinIO ПАРАЛЛЕЛЬНО
             _logger.LogInformation("Uploading HLS files for video {VideoId} to MinIO", command.VideoId);
             var hlsBasePath = $"{command.VideoId}/hls";
 
-            // Загружаем playlist
-            using (var playlistStream = new FileStream(playlistPath, FileMode.Open))
-            {
-                await _minioService.UploadObjectAsync(
-                    $"{hlsBasePath}/playlist.m3u8", 
-                    playlistStream, 
-                    "application/vnd.apple.mpegurl");
-            }
-
-            // Загружаем все .ts сегменты
             var segmentFiles = Directory.GetFiles(outputDir, "*.ts");
+
+            // ✅ Параллельная загрузка плейлиста и всех сегментов
+            var uploadSemaphore = new SemaphoreSlim(MaxParallelOperations);
+
+            var uploadTasks = new List<Task>
+            {
+                // Загрузка плейлиста
+                Task.Run(async () =>
+                {
+                    await uploadSemaphore.WaitAsync();
+                    try
+                    {
+                        using var playlistStream = new FileStream(
+                            playlistPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                            bufferSize: 81920, useAsync: true);
+
+                        await _minioService.UploadObjectAsync(
+                            $"{hlsBasePath}/playlist.m3u8",
+                            playlistStream,
+                            "application/vnd.apple.mpegurl",
+                            isHls: true);
+
+                        _logger.LogDebug("Uploaded playlist.m3u8");
+                    }
+                    finally
+                    {
+                        uploadSemaphore.Release();
+                    }
+                })
+            };
+
+            // Загрузка сегментов
             foreach (var segmentFile in segmentFiles)
             {
                 var fileName = Path.GetFileName(segmentFile);
-                using var segmentStream = new FileStream(segmentFile, FileMode.Open);
-                await _minioService.UploadObjectAsync(
-                    $"{hlsBasePath}/{fileName}", 
-                    segmentStream, 
-                    "video/mp2t");
+                uploadTasks.Add(Task.Run(async () =>
+                {
+                    await uploadSemaphore.WaitAsync();
+                    try
+                    {
+                        using var segmentStream = new FileStream(
+                            segmentFile, FileMode.Open, FileAccess.Read, FileShare.Read,
+                            bufferSize: 81920, useAsync: true);
+
+                        await _minioService.UploadObjectAsync(
+                            $"{hlsBasePath}/{fileName}",
+                            segmentStream,
+                            "video/mp2t",
+                            isHls: true);
+
+                        _logger.LogDebug("Uploaded segment {FileName}", fileName);
+                    }
+                    finally
+                    {
+                        uploadSemaphore.Release();
+                    }
+                }));
             }
 
-            // Удаляем оригинальное видео
-            await _minioService.DeleteObjectAsync(command.ObjectName);
+            await Task.WhenAll(uploadTasks);
+            _logger.LogInformation("Uploaded {Count} HLS files for video {VideoId}",
+                segmentFiles.Length + 1, command.VideoId);
+
+            // ✅ ПАРАЛЛЕЛЬНОЕ удаление чанков
+            await DeleteChunksAsync(command.VideoId, command.TotalChunks);
 
             // Отправляем финальное событие
             await _rabbitMqService.PublishVideoProgressAsync(new VideoProgressEvent
@@ -100,7 +141,7 @@ public class VideoProcessingService(
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing video {VideoId}", command.VideoId);
-            
+
             await _rabbitMqService.PublishVideoProgressAsync(new VideoProgressEvent
             {
                 VideoId = command.VideoId,
@@ -109,7 +150,7 @@ public class VideoProcessingService(
                 ErrorMessage = ex.Message,
                 Timestamp = DateTime.UtcNow
             });
-            
+
             throw;
         }
         finally
@@ -127,5 +168,83 @@ public class VideoProcessingService(
                 }
             }
         }
+    }
+
+    // ✅ УЛУЧШЕННЫЙ МЕТОД: параллельная загрузка чанков, последовательная запись
+    private async Task MergeChunksAsync(Guid videoId, int totalChunks, string outputPath)
+    {
+        _logger.LogInformation("Downloading {TotalChunks} chunks in parallel for video {VideoId}",
+            totalChunks, videoId);
+
+        // ✅ Параллельно скачиваем все чанки в память
+        var downloadSemaphore = new SemaphoreSlim(MaxParallelOperations);
+        var chunkBuffers = new MemoryStream[totalChunks];
+
+        var downloadTasks = Enumerable.Range(0, totalChunks).Select(async i =>
+        {
+            await downloadSemaphore.WaitAsync();
+            try
+            {
+                var chunkObjectName = $"{videoId}/chunks/chunk_{i:D6}";
+                var chunkStream = await _minioService.GetObjectAsync(chunkObjectName);
+
+                var buffer = new MemoryStream();
+                await chunkStream.CopyToAsync(buffer);
+                buffer.Position = 0;
+                chunkBuffers[i] = buffer;
+
+                // Освобождаем поток из MinIO
+                await chunkStream.DisposeAsync();
+
+                _logger.LogDebug("Downloaded chunk {ChunkIndex}/{TotalChunks}", i + 1, totalChunks);
+            }
+            finally
+            {
+                downloadSemaphore.Release();
+            }
+        });
+
+        await Task.WhenAll(downloadTasks);
+        _logger.LogInformation("Downloaded all chunks, writing to file");
+
+        // ✅ Последовательно записываем в файл (важен порядок!)
+        using var finalStream = new FileStream(
+            outputPath, FileMode.Create, FileAccess.Write, FileShare.None,
+            bufferSize: 81920, useAsync: true);
+
+        for (int i = 0; i < totalChunks; i++)
+        {
+            using var chunkBuffer = chunkBuffers[i];
+            chunkBuffer.Position = 0;
+            await chunkBuffer.CopyToAsync(finalStream);
+        }
+
+        _logger.LogInformation("Merged {TotalChunks} chunks for video {VideoId}", totalChunks, videoId);
+    }
+
+    // ✅ УЛУЧШЕННЫЙ МЕТОД: параллельное удаление
+    private async Task DeleteChunksAsync(Guid videoId, int totalChunks)
+    {
+        _logger.LogInformation("Deleting {TotalChunks} chunks in parallel for video {VideoId}",
+            totalChunks, videoId);
+
+        var deleteSemaphore = new SemaphoreSlim(MaxParallelOperations);
+
+        var deleteTasks = Enumerable.Range(0, totalChunks).Select(async i =>
+        {
+            await deleteSemaphore.WaitAsync();
+            try
+            {
+                var chunkObjectName = $"{videoId}/chunks/chunk_{i:D6}";
+                await _minioService.DeleteObjectAsync(chunkObjectName, fromHls: false);
+            }
+            finally
+            {
+                deleteSemaphore.Release();
+            }
+        });
+
+        await Task.WhenAll(deleteTasks);
+        _logger.LogInformation("Deleted {TotalChunks} chunks for video {VideoId}", totalChunks, videoId);
     }
 }

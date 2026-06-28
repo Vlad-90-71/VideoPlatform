@@ -1,0 +1,37 @@
+﻿@model Shared.DTO.LessonDto
+@{
+    ViewData["Title"] = Model.Title;
+}
+
+<h1>@Model.Title</h1>
+
+<div>
+    <h4>Описание</h4>
+    <p>@Model.Description</p>
+    
+    @if (Model.VideoStatus == Shared.DTO.VideoStatus.Ready && !string.IsNullOrEmpty(Model.VideoUrl))
+    {
+        <h4>Видео</h4>
+        <div id="video-player" data-video-url="@Model.VideoUrl"></div>
+    }
+    else
+    {
+        <div class="alert alert-info">
+            <strong>Статус видео:</strong> @Model.VideoStatus
+            @if (Model.VideoStatus == Shared.DTO.VideoStatus.Processing)
+            {
+                <span id="progress-display">Загрузка...</span>
+            }
+        </div>
+    }
+</div>
+
+<div>
+    <a asp-action="Index">Назад к списку</a>
+</div>
+
+@section Scripts {
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="~/js/video-player.js"></script>
+    <script src="~/js/signalr-progress.js"></script>
+}

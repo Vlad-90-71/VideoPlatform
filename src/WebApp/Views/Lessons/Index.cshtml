@@ -1,0 +1,41 @@
+﻿@model IEnumerable<Shared.DTO.LessonDto>
+@{
+    ViewData["Title"] = "Уроки";
+}
+
+<h1>Уроки</h1>
+
+<p>
+    <a asp-action="Create" class="btn btn-primary">Создать урок</a>
+</p>
+
+<table class="table">
+    <thead>
+        <tr>
+            <th>Название</th>
+            <th>Описание</th>
+            <th>Статус видео</th>
+            <th>Действия</th>
+        </tr>
+    </thead>
+    <tbody>
+@foreach (var item in Model) {
+        <tr>
+            <td>@item.Title</td>
+            <td>@item.Description</td>
+            <td>
+                <span class="badge bg-@(item.VideoStatus == Shared.DTO.VideoStatus.Ready ? "success" : "warning")">
+                    @item.VideoStatus
+                </span>
+            </td>
+            <td>
+                <a asp-action="Details" asp-route-id="@item.Id">Просмотр</a> |
+                <a asp-action="Edit" asp-route-id="@item.Id">Редактировать</a> |
+                <form asp-action="Delete" asp-route-id="@item.Id" method="post" style="display:inline">
+                    <button type="submit" class="btn-link" onclick="return confirm('Удалить урок?');">Удалить</button>
+                </form>
+            </td>
+        </tr>
+}
+    </tbody>
+</table>

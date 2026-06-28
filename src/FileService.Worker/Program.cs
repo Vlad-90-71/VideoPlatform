@@ -6,16 +6,20 @@ using Shared.Configuration;
 var builder = Host.CreateApplicationBuilder(args);
 
 // Configuration
-builder.Services.Configure<MinioSettings>(builder.Configuration.GetSection(MinioSettings.SectionName));
+builder.Services.Configure<MinioSettings>(builder.Configuration.GetSection(StorageSettings.SectionName));
 builder.Services.Configure<RabbitMqSettings>(builder.Configuration.GetSection(RabbitMqSettings.SectionName));
 
 // MinIO
 builder.Services.AddMinio(configureClient => configureClient
-    .WithEndpoint(builder.Configuration.GetValue<string>("Minio:Endpoint")!)
+    .WithEndpoint(builder.Configuration["Storage:Endpoint"]!)
     .WithCredentials(
-        builder.Configuration.GetValue<string>("Minio:AccessKey")!,
-        builder.Configuration.GetValue<string>("Minio:SecretKey")!)
-    .WithSSL(builder.Configuration.GetValue<bool>("Minio:WithSSL"))
+        builder.Configuration["Storage:AccessKey"]!,
+        builder.Configuration["Storage:SecretKey"]!)
+    .WithSSL(builder.Configuration.GetValue<bool>("Storage:UseSSL"))
+    .WithHttpClient(new HttpClient(new HttpClientHandler
+    {
+        ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+    }))
     .Build());
 
 // Services

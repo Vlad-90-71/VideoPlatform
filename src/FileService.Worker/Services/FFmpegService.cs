@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 
 namespace FileService.Worker.Services;
@@ -28,16 +29,17 @@ public partial class FFmpegService(ILogger<FFmpegService> logger) : IFFmpegServi
         var escapedPlaylistPath = $"\"{playlistPath}\"";
         var escapedSegmentPattern = $"\"{segmentPattern}\"";
 
-        // Команда FFmpeg для конвертации в HLS
+        // ✅ Команда FFmpeg — только видео и аудио, без субтитров
         var arguments = $"-i {escapedInputPath} " +
-                        "-codec: copy " +
-                        "-start_number 0 " +
-                        "-hls_time 10 " +
-                        "-hls_list_size 0 " +
-                        $"-hls_segment_filename {escapedSegmentPattern} " +
-                        $"-f hls {escapedPlaylistPath}";
+                "-map 0:v:0 -map 0:a:0 " +  // ← ДОБАВИТЬ ЭТУ СТРОКУ
+                "-codec: copy " +
+                "-start_number 0 " +
+                "-hls_time 10 " +
+                "-hls_list_size 0 " +
+                $"-hls_segment_filename {escapedSegmentPattern} " +
+                $"-f hls {escapedPlaylistPath}";
 
-        var ffmpegPath = GetExecutablePath("ffmpeg.exe");
+        var ffmpegPath = GetExecutablePath("ffmpeg");
 
         var processStartInfo = new ProcessStartInfo
         {
@@ -51,14 +53,20 @@ public partial class FFmpegService(ILogger<FFmpegService> logger) : IFFmpegServi
 
         using var process = new Process { StartInfo = processStartInfo };
 
-        // Regex для парсинга времени прогресса: time=HH:MM:SS.ms
-        //var progressRegex = new Regex(@"time=(\d{2}):(\d{2}):(\d{2})\.?(\d{0,2})");
-        var regex = ProgressRegex(); // ← Используем сгенерированный Regex
+        var regex = ProgressRegex();
         var lastReportedProgress = 0;
+        var errorOutput = new System.Text.StringBuilder();
+        var errorReadComplete = new TaskCompletionSource<bool>();
 
         process.ErrorDataReceived += (sender, e) =>
         {
-            if (string.IsNullOrEmpty(e.Data)) return;
+            if (e.Data == null)
+            {
+                errorReadComplete.TrySetResult(true);
+                return;
+            }
+
+            errorOutput.AppendLine(e.Data);
 
             var match = regex.Match(e.Data);
             if (match.Success && duration > 0)
@@ -85,9 +93,12 @@ public partial class FFmpegService(ILogger<FFmpegService> logger) : IFFmpegServi
         process.BeginErrorReadLine();
 
         await process.WaitForExitAsync();
+        await errorReadComplete.Task;
 
         if (process.ExitCode != 0)
         {
+            _logger.LogError("FFmpeg failed with exit code {ExitCode}. Error: {Error}",
+                process.ExitCode, errorOutput.ToString());
             throw new Exception($"FFmpeg failed with exit code {process.ExitCode}");
         }
 
@@ -97,7 +108,7 @@ public partial class FFmpegService(ILogger<FFmpegService> logger) : IFFmpegServi
 
     private async Task<double> GetVideoDurationAsync(string inputPath)
     {
-        var ffprobePath = GetExecutablePath("ffprobe.exe");
+        var ffprobePath = GetExecutablePath("ffprobe");
         var escapedInputPath = $"\"{inputPath}\"";
 
         var processStartInfo = new ProcessStartInfo
@@ -132,24 +143,40 @@ public partial class FFmpegService(ILogger<FFmpegService> logger) : IFFmpegServi
     }
 
     /// <summary>
-    /// Ищет исполняемый файл в нескольких местах:
-    /// 1. В папке приложения (рядом с dll)
-    /// 2. В PATH системы
+    /// Ищет исполняемый файл:
+    /// 1. В PATH системы (предпочтительно для Docker)
+    /// 2. В папке приложения (для Windows разработки)
     /// </summary>
     private string GetExecutablePath(string executableName)
     {
-        // Вариант 1: Ищем рядом с приложением
+        // Определяем расширение для текущей ОС
+        var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+        var executableFileName = isWindows ? $"{executableName}.exe" : executableName;
+
+        // Вариант 1: Ищем рядом с приложением (для Windows разработки)
         var appDir = AppContext.BaseDirectory;
-        var localPath = Path.Combine(appDir, executableName);
+        var localPath = Path.Combine(appDir, executableFileName);
 
         if (File.Exists(localPath))
         {
-            _logger.LogDebug("Found {Executable} in application directory: {Path}", executableName, localPath);
+            _logger.LogInformation("Found {Executable} in application directory: {Path}", executableFileName, localPath);
             return localPath;
         }
 
-        // Вариант 2: Полагаемся на PATH (возвращаем просто имя файла)
-        _logger.LogDebug("{Executable} not found in app directory, will use PATH", executableName);
-        return executableName;
+        // Вариант 2: Проверяем системные пути (для Docker)
+        var systemPaths = new[] { "/usr/bin", "/usr/local/bin" };
+        foreach (var systemPath in systemPaths)
+        {
+            var fullPath = Path.Combine(systemPath, executableFileName);
+            if (File.Exists(fullPath))
+            {
+                _logger.LogInformation("Found {Executable} in system path: {Path}", executableFileName, fullPath);
+                return fullPath;
+            }
+        }
+
+        // Вариант 3: Полагаемся на PATH (возвращаем просто имя файла)
+        _logger.LogInformation("Using {Executable} from PATH", executableFileName);
+        return executableFileName;
     }
 }

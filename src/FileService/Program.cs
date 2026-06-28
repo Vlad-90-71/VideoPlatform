@@ -1,4 +1,5 @@
 ﻿using FileService.Services;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.OpenApi.Models;
 using Minio;
 using Shared.Configuration;
@@ -24,15 +25,22 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 // Configuration
-builder.Services.Configure<MinioSettings>(builder.Configuration.GetSection(MinioSettings.SectionName));
+// ✅ ИСПРАВЛЕНО: используем StorageSettings вместо MinioSettings
+builder.Services.Configure<StorageSettings>(builder.Configuration.GetSection(StorageSettings.SectionName));
 builder.Services.Configure<RabbitMqSettings>(builder.Configuration.GetSection(RabbitMqSettings.SectionName));
+
 // MinIO
+// ✅ ИСПРАВЛЕНО: используем Storage: вместо Minio:
 builder.Services.AddMinio(configureClient => configureClient
-    .WithEndpoint(builder.Configuration.GetValue<string>("Minio:Endpoint")!)
+    .WithEndpoint(builder.Configuration["Storage:Endpoint"]!)
     .WithCredentials(
-        builder.Configuration.GetValue<string>("Minio:AccessKey")!,
-        builder.Configuration.GetValue<string>("Minio:SecretKey")!)
-    .WithSSL(builder.Configuration.GetValue<bool>("Minio:WithSSL"))
+        builder.Configuration["Storage:AccessKey"]!,
+        builder.Configuration["Storage:SecretKey"]!)
+    .WithSSL(builder.Configuration.GetValue<bool>("Storage:UseSSL"))
+    .WithHttpClient(new HttpClient(new HttpClientHandler
+    {
+        ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+    }))
     .Build());
 
 // Services
@@ -59,12 +67,12 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI(c =>
     {
-        c.SwaggerEndpoint("/swagger/v1/swagger.json", "LessonService v1");
+        c.SwaggerEndpoint("/swagger/v1/swagger.json", "FileService v1");
         c.RoutePrefix = "swagger";
     });
 }
 
-app.UseHttpsRedirection();
+//app.UseHttpsRedirection();
 app.UseCors("AllowAll");
 app.UseAuthorization();
 app.MapControllers();

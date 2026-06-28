@@ -188,4 +188,49 @@ public class RabbitMqService(IOptions<RabbitMqSettings> settings, ILogger<Rabbit
 
         GC.SuppressFinalize(this);
     }
+
+    public async Task ConsumeVideoProgressEvents(Func<VideoProgressEvent, Task> handler, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync();
+
+        if (_channel is null)
+        {
+            throw new InvalidOperationException("RabbitMQ channel is not initialized");
+        }
+
+        var consumer = new AsyncEventingBasicConsumer(_channel);
+
+        consumer.ReceivedAsync += async (sender, ea) =>
+        {
+            try
+            {
+                var body = ea.Body.ToArray();
+                var message = Encoding.UTF8.GetString(body);
+                var eventData = JsonSerializer.Deserialize<VideoProgressEvent>(message);
+
+                if (eventData != null)
+                {
+                    _logger.LogInformation("Received VideoProgressEvent for video {VideoId}: {Progress}%",
+                        eventData.VideoId, eventData.ProgressPercentage);
+                    await handler(eventData);
+                }
+
+                await _channel!.BasicAckAsync(deliveryTag: ea.DeliveryTag, multiple: false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing progress event");
+                await _channel!.BasicNackAsync(deliveryTag: ea.DeliveryTag, multiple: false, requeue: true);
+            }
+        };
+
+        await _channel.BasicConsumeAsync(
+            queue: MessagingConstants.VideoProgressQueue, 
+            autoAck: false, 
+            consumer: consumer, 
+            cancellationToken: cancellationToken);
+
+        _logger.LogInformation("Started consuming from queue {Queue}", 
+            MessagingConstants.VideoProgressQueue);
+    }
 }

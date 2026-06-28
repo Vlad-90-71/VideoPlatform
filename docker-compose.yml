@@ -15,6 +15,8 @@ services:
       - ./infra/ssl/certs/services/nginx.vp.local/nginx.vp.local.crt:/etc/nginx/certs/server.crt:ro
       - ./infra/ssl/certs/services/nginx.vp.local/nginx.vp.local.key:/etc/nginx/certs/server.key:ro
       - ./infra/ssl/certs/ca/ca.crt:/etc/nginx/certs/ca.crt:ro
+      - ./infra/ssl/certs/services/minio.vp.local/minio.vp.local.crt:/etc/nginx/certs/minio.vp.local.crt:ro
+      - ./infra/ssl/certs/services/minio.vp.local/minio.vp.local.key:/etc/nginx/certs/minio.vp.local.key:ro
     networks:
       vp-network:
         aliases:
@@ -77,24 +79,21 @@ services:
       timeout: 5s
       retries: 5
 
-  # Инициализатор бакетов MinIO
+  # ============================================================
+  # ✅ Инициализация MinIO (CORS + бакеты)
+  # ============================================================
   minio-init:
     image: minio/mc:latest
     container_name: vp-minio-init
     depends_on:
       minio:
         condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set vpminio https://minio:9000 minio_admin minio_secret --insecure;
-      mc mb vpminio/video-storage --ignore-existing --insecure;
-      mc mb vpminio/video-hls --ignore-existing --insecure;
-      mc anonymous set download vpminio/video-hls --insecure;
-      echo 'Buckets created successfully';
-      exit 0;
-      "
+    volumes:
+      - ./infra/minio/init-cors.sh:/init-cors.sh:ro
+    entrypoint: ["/bin/sh", "/init-cors.sh"]
     networks:
       - vp-network
+    restart: "no"
 
   # ============================================================
   # RabbitMQ
@@ -153,6 +152,14 @@ services:
       - ASPNETCORE_URLS=http://+:8080;https://+:8081
       - ASPNETCORE_Kestrel__Certificates__Default__Path=/https/webapp.vp.local.pfx
       - ASPNETCORE_Kestrel__Certificates__Default__Password=vp_secret
+      - Storage__Endpoint=minio:9000
+      - Storage__PublicEndpoint=minio.vp.local
+      - Storage__AccessKey=minio_admin
+      - Storage__SecretKey=minio_secret
+      - Storage__Region=us-east-1
+      - Storage__UseSSL=true
+      - Storage__VideoStorageBucket=video-storage
+      - Storage__VideoHlsBucket=video-hls
     ports:
       - "5000:8080"
       - "5001:8081"
@@ -180,6 +187,15 @@ services:
       - ASPNETCORE_URLS=http://+:8080;https://+:8081
       - ASPNETCORE_Kestrel__Certificates__Default__Path=/https/fileservice.vp.local.pfx
       - ASPNETCORE_Kestrel__Certificates__Default__Password=vp_secret
+      - Storage__Endpoint=minio:9000
+      - Storage__PublicEndpoint=minio.vp.local
+      - Storage__AccessKey=minio_admin
+      - Storage__SecretKey=minio_secret
+      - Storage__Region=us-east-1
+      - Storage__UseSSL=true
+      - Storage__VideoStorageBucket=video-storage
+      - Storage__VideoHlsBucket=video-hls
+      - Storage__PresignedUrlExpirySeconds=3600
     ports:
       - "5100:8080"
       - "5101:8081"
@@ -231,6 +247,18 @@ services:
     restart: unless-stopped
     environment:
       - DOTNET_ENVIRONMENT=Development
+      - Storage__Endpoint=minio:9000
+      - Storage__PublicEndpoint=webapp.vp.local
+      - Storage__AccessKey=minio_admin
+      - Storage__SecretKey=minio_secret
+      - Storage__Region=us-east-1
+      - Storage__UseSSL=true
+      - Storage__VideoStorageBucket=video-storage
+      - Storage__VideoHlsBucket=video-hls
+      - Storage__PresignedUrlExpirySeconds=3600
+      - RabbitMq__HostName=rabbitmq
+      - RabbitMq__UserName=vp_rabbit
+      - RabbitMq__Password=vp_rabbit_secret
     volumes:
       - ./infra/ssl/certs/ca/ca.crt:/app/certs/ca.crt:ro
     depends_on:
