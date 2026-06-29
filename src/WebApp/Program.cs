@@ -1,3 +1,4 @@
+п»їusing Shared.Configuration;
 using WebApp.Hubs;
 using WebApp.Services;
 using WebApp.Workers;
@@ -8,18 +9,20 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllersWithViews();
 builder.Services.AddSignalR();
 
-// HTTP Clients
+// вњ… Р”РѕР±Р°РІСЊС‚Рµ РЅР°СЃС‚СЂРѕР№РєСѓ FileService
+builder.Services.Configure<FileServiceSettings>(
+    builder.Configuration.GetSection("FileService"));
+
+// вњ… HTTP РєР»РёРµРЅС‚ РґР»СЏ FileService
 builder.Services.AddHttpClient<IFileServiceClient, FileServiceClient>(client =>
 {
-    var baseUrl = builder.Configuration["FileService:BaseUrl"];
-    Console.WriteLine($"FileService BaseUrl: {baseUrl}"); // Для отладки
-    client.BaseAddress = new Uri(baseUrl ?? "http://fileservice:8080");
+    client.Timeout = TimeSpan.FromSeconds(30);
 });
 
 builder.Services.AddHttpClient<ILessonServiceClient, LessonServiceClient>(client =>
 {
     var baseUrl = builder.Configuration["LessonService:BaseUrl"];
-    Console.WriteLine($"LessonService BaseUrl: {baseUrl}"); // Для отладки
+    Console.WriteLine($"LessonService BaseUrl: {baseUrl}"); // Р”Р»СЏ РѕС‚Р»Р°РґРєРё
     client.BaseAddress = new Uri(baseUrl ?? "http://lessonservice:8080");
 });
 

@@ -1,97 +1,73 @@
-﻿using Shared.DTO;
-using Shared.Models;
-using System.Net.Http.Headers;
-using System.Text.Json;
+﻿namespace WebApp.Services;
 
-namespace WebApp.Services;
-
-public class FileServiceClient(HttpClient httpClient, ILogger<FileServiceClient> logger) : IFileServiceClient
+public class FileServiceClient(
+    HttpClient httpClient,
+    IConfiguration configuration,
+    ILogger<FileServiceClient> logger) : IFileServiceClient
 {
     private readonly HttpClient _httpClient = httpClient;
+    private readonly string _baseUrl = configuration["FileService:BaseUrl"] ?? "http://fileservice:8080";
     private readonly ILogger<FileServiceClient> _logger = logger;
 
-    private static readonly JsonSerializerOptions _jsonOptions = new()
+    public async Task<Dictionary<string, string>> GetPresignedUploadUrlsAsync(
+        IEnumerable<string> objectNames,
+        string bucketName,
+        string contentType = "application/octet-stream",
+        int expirySeconds = 3600)
     {
-        PropertyNameCaseInsensitive = true
-    };
+        var url = $"{_baseUrl}/api/video/presigned/upload";
 
-    // ✅ Новый метод — инициализация загрузки
-    public async Task<Models.InitUploadResponse> InitUploadAsync(Models.InitUploadRequest request)
-    {
-        var response = await _httpClient.PostAsJsonAsync("/api/video/upload/init", request);
-        response.EnsureSuccessStatusCode();
-
-        var json = await response.Content.ReadAsStringAsync();
-        return JsonSerializer.Deserialize<Models.InitUploadResponse>(json, _jsonOptions)!;
-    }
-
-    // DTO (должны совпадать с FileService)
-    public record InitUploadRequest(string FileName, long FileSize, int ChunkSize, int TotalChunks);
-    public record InitUploadResponse(Guid VideoId, int TotalChunks, int ChunkSize, List<ChunkUploadUrlDto> UploadUrls);
-    public record ChunkUploadUrlDto(int ChunkIndex, string UploadUrl);
-
-    public async Task<UploadProgressDto> UploadChunkAsync(Guid videoId, string fileName, int chunkIndex, int totalChunks, Stream chunkStream)
-    {
-        var content = new MultipartFormDataContent
-        {
-            { new StreamContent(chunkStream), "File", fileName },
-            { new StringContent(videoId.ToString()), "VideoId" },
-            { new StringContent(fileName), "FileName" },
-            { new StringContent(chunkIndex.ToString()), "ChunkIndex" },
-            { new StringContent(totalChunks.ToString()), "TotalChunks" }
-        };
-
-        var response = await _httpClient.PostAsync("/api/video/upload/chunk", content);
-        response.EnsureSuccessStatusCode();
-
-        var json = await response.Content.ReadAsStringAsync();
-        return JsonSerializer.Deserialize<UploadProgressDto>(json, _jsonOptions)!;  // ← Используем кэшированный
-    }
-
-    public async Task<VideoMetadataDto> CompleteUploadAsync(Guid videoId, string fileName, int totalChunks)
-    {
         var request = new
         {
-            VideoId = videoId,
-            FileName = fileName,
-            TotalChunks = totalChunks
+            objectNames = objectNames.ToList(),
+            bucketName,
+            contentType,
+            expirySeconds
         };
 
-        var response = await _httpClient.PostAsJsonAsync("/api/video/upload/complete", request);
+        _logger.LogDebug("Requesting presigned upload URLs from FileService");
+
+        var response = await _httpClient.PostAsJsonAsync(url, request);
         response.EnsureSuccessStatusCode();
 
-        var json = await response.Content.ReadAsStringAsync();
-        return JsonSerializer.Deserialize<VideoMetadataDto>(json, _jsonOptions)!;  // ← Используем кэшированный
-    }
-    /*
-    public async Task<VideoMetadataDto> GetVideoMetadataAsync(Guid videoId)
-    {
-        var response = await _httpClient.GetAsync($"/api/video/{videoId}");
-        response.EnsureSuccessStatusCode();
+        var result = await response.Content.ReadFromJsonAsync<PresignedUrlsResponse>();
 
-        var json = await response.Content.ReadAsStringAsync();
-        return JsonSerializer.Deserialize<VideoMetadataDto>(json, _jsonOptions)!;  // ← Используем кэшированный
-    }
-    */
-    public async Task<VideoInfoDto?> GetVideoInfoAsync(Guid videoId)
-    {
-        var response = await _httpClient.GetAsync($"/api/video/{videoId}");
-
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        if (result?.Urls == null)
         {
-            return null;
+            throw new InvalidOperationException("Failed to deserialize presigned upload URLs");
         }
 
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<VideoInfoDto>();
+        _logger.LogInformation("Received {Count} presigned upload URLs", result.Urls.Count);
+        return result.Urls;
     }
 
-    public async Task<List<VideoInfoDto>> GetAllVideosAsync()
+    public async Task<List<ObjectItemDto>> ListObjectsAsync(
+        string bucketName,
+        string? prefix = null,
+        bool recursive = true)
     {
-        var response = await _httpClient.GetAsync("/api/video/list");
+        var url = $"{_baseUrl}/api/video/objects?bucketName={Uri.EscapeDataString(bucketName)}";
+
+        if (!string.IsNullOrEmpty(prefix))
+        {
+            url += $"&prefix={Uri.EscapeDataString(prefix)}";
+        }
+
+        url += $"&recursive={recursive.ToString().ToLower()}";
+
+        _logger.LogDebug("Requesting objects list from FileService: {Url}", url);
+
+        var response = await _httpClient.GetAsync(url);
         response.EnsureSuccessStatusCode();
 
-        return await response.Content.ReadFromJsonAsync<List<VideoInfoDto>>()
-            ?? [];
+        var result = await response.Content.ReadFromJsonAsync<ListObjectsResponse>();
+
+        if (result?.Objects == null)
+        {
+            throw new InvalidOperationException("Failed to deserialize objects list");
+        }
+
+        _logger.LogInformation("Received {Count} objects from bucket {Bucket}", result.Objects.Count, bucketName);
+        return result.Objects;
     }
 }

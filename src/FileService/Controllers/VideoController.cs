@@ -5,109 +5,160 @@ namespace FileService.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class VideoController(IMinioService minioService, ILogger<VideoController> logger) : ControllerBase
+public class VideoController(
+    IPresignedUrlService presignedUrlService,
+    IObjectStorageService objectStorageService,
+    ILogger<VideoController> logger) : ControllerBase
 {
-    private readonly IMinioService _minioService = minioService;
+    private readonly IPresignedUrlService _presignedUrlService = presignedUrlService;
+    private readonly IObjectStorageService _objectStorageService = objectStorageService;
     private readonly ILogger<VideoController> _logger = logger;
 
-    // ✅ Новый endpoint — инициализация загрузки и получение presigned URLs
-    [HttpPost("upload/init")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> InitUpload([FromBody] InitUploadRequest request)
+    #region Presigned URLs - Upload
+
+    [HttpPost("presigned/upload")]
+    public async Task<IActionResult> GetPresignedUploadUrls([FromBody] PresignedUrlsRequest request)
     {
         try
         {
-            var videoId = Guid.NewGuid();
-            var uploadUrls = new List<ChunkUploadUrlDto>();
+            _logger.LogInformation("Generating {Count} presigned upload URLs for bucket {Bucket}",
+                request.ObjectNames.Count(), request.BucketName);
 
-            // Генерируем presigned URL для каждого чанка
-            for (int i = 0; i < request.TotalChunks; i++)
+            var urls = await _presignedUrlService.GetPresignedUploadUrlsAsync(
+                request.ObjectNames,
+                request.BucketName,
+                request.ContentType,
+                request.ExpirySeconds);
+
+            return Ok(new PresignedUrlsResponse
             {
-                var objectName = $"{videoId}/chunks/chunk_{i:D6}";
-                var presignedUrl = await _minioService.GetPresignedUploadUrlAsync(objectName, "application/octet-stream");
-
-                uploadUrls.Add(new ChunkUploadUrlDto(i, presignedUrl));
-            }
-
-            var response = new InitUploadResponse
-            (
-                videoId,
-                request.TotalChunks,
-                request.ChunkSize,
-                 uploadUrls
-            );
-
-            _logger.LogInformation("Initialized upload for video {VideoId}, {TotalChunks} chunks",
-                videoId, request.TotalChunks);
-
-            return Ok(response);
+                Urls = urls,
+                ExpirySeconds = request.ExpirySeconds,
+                Operation = "upload"
+            });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error initializing upload");
+            _logger.LogError(ex, "Error generating presigned upload URLs");
             return BadRequest(new { error = ex.Message });
         }
     }
 
-    // DTO для запроса
-    public record InitUploadRequest(
-        string FileName,
-        long FileSize,
-        int ChunkSize,
-        int TotalChunks
-    );
+    #endregion
 
-    // DTO для ответа
-    public record InitUploadResponse(
-        Guid VideoId,
-        int TotalChunks,
-        int ChunkSize,
-        List<ChunkUploadUrlDto> UploadUrls
-    );
+    #region Presigned URLs - Download
 
-    public record ChunkUploadUrlDto(
-        int ChunkIndex,
-        string UploadUrl
-    );
-
-    // ✅ Оставили только один метод
-    [HttpGet("{videoId}")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GetVideoInfo(Guid videoId)
+    [HttpPost("presigned/download")]
+    public async Task<IActionResult> GetPresignedDownloadUrls([FromBody] PresignedUrlsRequest request)
     {
         try
         {
-            var videoInfo = await _minioService.GetVideoInfoAsync(videoId);
+            _logger.LogInformation("Generating {Count} presigned download URLs for bucket {Bucket}",
+                request.ObjectNames.Count(), request.BucketName);
 
-            if (videoInfo == null)
+            var urls = await _presignedUrlService.GetPresignedDownloadUrlsAsync(
+                request.ObjectNames,
+                request.BucketName,
+                request.ExpirySeconds);
+
+            return Ok(new PresignedUrlsResponse
             {
-                return NotFound();
-            }
-
-            return Ok(videoInfo);
+                Urls = urls,
+                ExpirySeconds = request.ExpirySeconds,
+                Operation = "download"
+            });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting video info for {VideoId}", videoId);
-            return StatusCode(500, new { error = ex.Message });
+            _logger.LogError(ex, "Error generating presigned download URLs");
+            return BadRequest(new { error = ex.Message });
         }
     }
 
-    [HttpGet("list")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    public async Task<IActionResult> GetAllVideos()
+    #endregion
+
+    #region Direct Delete
+
+    [HttpDelete("objects")]
+    public async Task<IActionResult> DeleteObjects([FromBody] DeleteObjectsRequest request)
     {
         try
         {
-            var videos = await _minioService.GetAllVideosAsync();
-            return Ok(videos);
+            _logger.LogInformation("Deleting {Count} objects from bucket {Bucket}",
+                request.ObjectNames.Count(), request.BucketName);
+
+            await _objectStorageService.DeleteObjectsAsync(request.ObjectNames, request.BucketName);
+
+            return Ok(new
+            {
+                success = true,
+                deletedCount = request.ObjectNames.Count(),
+                bucketName = request.BucketName
+            });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting all videos");
+            _logger.LogError(ex, "Error deleting objects from bucket {Bucket}", request.BucketName);
             return StatusCode(500, new { error = ex.Message });
         }
     }
+
+    #endregion
+
+    #region List Objects
+
+    [HttpGet("objects")]
+    public async Task<IActionResult> ListObjects(
+        [FromQuery] string bucketName,
+        [FromQuery] string? prefix = null,
+        [FromQuery] bool recursive = true)
+    {
+        try
+        {
+            _logger.LogInformation("Listing objects in bucket {Bucket} with prefix {Prefix}",
+                bucketName, prefix);
+
+            var objects = await _objectStorageService.ListObjectsAsync(bucketName, prefix, recursive);
+
+            return Ok(new
+            {
+                bucketName,
+                prefix,
+                count = objects.Count,
+                objects
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error listing objects in bucket {Bucket}", bucketName);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    #endregion
+
+    #region DTOs
+
+    public record PresignedUrlsRequest
+    {
+        public IEnumerable<string> ObjectNames { get; init; } = [];
+        public string BucketName { get; init; } = string.Empty;
+        public int ExpirySeconds { get; init; } = 3600;
+        public string ContentType { get; init; } = "application/octet-stream";
+    }
+
+    public record PresignedUrlsResponse
+    {
+        public Dictionary<string, string> Urls { get; init; } = [];
+        public int ExpirySeconds { get; init; }
+        public string Operation { get; init; } = string.Empty;
+    }
+
+    public record DeleteObjectsRequest
+    {
+        public IEnumerable<string> ObjectNames { get; init; } = [];
+        public string BucketName { get; init; } = string.Empty;
+    }
+
+    #endregion
 }

@@ -1,34 +1,34 @@
 ﻿using FileService.Worker.Services;
 using FileService.Worker.Workers;
-using Minio;
 using Shared.Configuration;
 
 var builder = Host.CreateApplicationBuilder(args);
 
 // Configuration
-builder.Services.Configure<MinioSettings>(builder.Configuration.GetSection(StorageSettings.SectionName));
-builder.Services.Configure<RabbitMqSettings>(builder.Configuration.GetSection(RabbitMqSettings.SectionName));
+builder.Services.Configure<StorageSettings>(
+    builder.Configuration.GetSection(StorageSettings.SectionName));
 
-// MinIO
-builder.Services.AddMinio(configureClient => configureClient
-    .WithEndpoint(builder.Configuration["Storage:Endpoint"]!)
-    .WithCredentials(
-        builder.Configuration["Storage:AccessKey"]!,
-        builder.Configuration["Storage:SecretKey"]!)
-    .WithSSL(builder.Configuration.GetValue<bool>("Storage:UseSSL"))
-    .WithHttpClient(new HttpClient(new HttpClientHandler
-    {
-        ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-    }))
-    .Build());
+builder.Services.Configure<RabbitMqSettings>(
+    builder.Configuration.GetSection(RabbitMqSettings.SectionName));
+
+builder.Services.Configure<FileServiceSettings>(
+    builder.Configuration.GetSection("FileService"));
+
+// ✅ HTTP клиенты
+builder.Services.AddHttpClient<IFileServiceClient, FileServiceClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
+builder.Services.AddHttpClient<IPresignedHttpClient, PresignedHttpClient>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(10);
+});
 
 // Services
-builder.Services.AddScoped<IMinioService, MinioService>();
-builder.Services.AddSingleton<IRabbitMqService, RabbitMqService>();
 builder.Services.AddScoped<IFFmpegService, FFmpegService>();
 builder.Services.AddScoped<IVideoProcessingService, VideoProcessingService>();
-
-// Workers
+builder.Services.AddSingleton<IRabbitMqService, RabbitMqService>();
 builder.Services.AddHostedService<VideoProcessingWorker>();
 
 var host = builder.Build();

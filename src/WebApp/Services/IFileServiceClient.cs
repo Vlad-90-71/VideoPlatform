@@ -1,17 +1,44 @@
-﻿using Shared.DTO;
+﻿using System.Net.Http.Json;
 using Shared.Models;
-using WebApp.Models;
 
 namespace WebApp.Services;
 
 public interface IFileServiceClient
 {
-    Task<UploadProgressDto> UploadChunkAsync(Guid videoId, string fileName, int chunkIndex, int totalChunks, Stream chunkStream);
-    Task<VideoMetadataDto> CompleteUploadAsync(Guid videoId, string fileName, int totalChunks);
-    //Task<VideoMetadataDto> GetVideoMetadataAsync(Guid videoId);
+    // ✅ Получение presigned URLs для загрузки (новый API)
+    Task<Dictionary<string, string>> GetPresignedUploadUrlsAsync(
+        IEnumerable<string> objectNames,
+        string bucketName,
+        string contentType = "application/octet-stream",
+        int expirySeconds = 3600);
 
-    Task<VideoInfoDto?> GetVideoInfoAsync(Guid videoId);
-    Task<List<VideoInfoDto>> GetAllVideosAsync();
+    // ✅ Получение списка объектов (новый API)
+    Task<List<ObjectItemDto>> ListObjectsAsync(
+        string bucketName,
+        string? prefix = null,
+        bool recursive = true);
+}
 
-    Task<InitUploadResponse> InitUploadAsync(InitUploadRequest request);
+public record PresignedUrlsResponse
+{
+    public Dictionary<string, string> Urls { get; init; } = new();
+    public int ExpirySeconds { get; init; }
+    public string Operation { get; init; } = string.Empty;
+}
+
+public record ListObjectsResponse
+{
+    public string BucketName { get; init; } = string.Empty;
+    public string? Prefix { get; init; }
+    public int Count { get; init; }
+    public List<ObjectItemDto> Objects { get; init; } = new();
+}
+
+public record ObjectItemDto
+{
+    public string Key { get; init; } = string.Empty;
+    public long Size { get; init; }
+    public DateTime LastModified { get; init; }
+    public string ETag { get; init; } = string.Empty;
+    public string ContentType { get; init; } = string.Empty;
 }

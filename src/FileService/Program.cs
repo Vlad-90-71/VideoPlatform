@@ -1,8 +1,6 @@
-﻿using FileService.Services;
-using Microsoft.AspNetCore.Http.Features;
-using Microsoft.OpenApi.Models;
-using Minio;
+﻿using Microsoft.OpenApi.Models;
 using Shared.Configuration;
+using FileService.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -25,26 +23,11 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 // Configuration
-// ✅ ИСПРАВЛЕНО: используем StorageSettings вместо MinioSettings
 builder.Services.Configure<StorageSettings>(builder.Configuration.GetSection(StorageSettings.SectionName));
-builder.Services.Configure<RabbitMqSettings>(builder.Configuration.GetSection(RabbitMqSettings.SectionName));
-
-// MinIO
-// ✅ ИСПРАВЛЕНО: используем Storage: вместо Minio:
-builder.Services.AddMinio(configureClient => configureClient
-    .WithEndpoint(builder.Configuration["Storage:Endpoint"]!)
-    .WithCredentials(
-        builder.Configuration["Storage:AccessKey"]!,
-        builder.Configuration["Storage:SecretKey"]!)
-    .WithSSL(builder.Configuration.GetValue<bool>("Storage:UseSSL"))
-    .WithHttpClient(new HttpClient(new HttpClientHandler
-    {
-        ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-    }))
-    .Build());
 
 // Services
-builder.Services.AddScoped<IMinioService, MinioService>();
+builder.Services.AddScoped<IPresignedUrlService, PresignedUrlService>();
+builder.Services.AddScoped<IObjectStorageService, ObjectStorageService>();
 
 // CORS
 builder.Services.AddCors(options =>

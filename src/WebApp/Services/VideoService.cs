@@ -47,6 +47,7 @@ public class VideoService(
             VideoId = videoId,
             ProgressPercentage = 0,
             Status = VideoProcessingStatus.Started,
+            FileName = fileName,
             Timestamp = DateTime.UtcNow
         };
         _progressCache.UpdateProgress(progressEvent);
@@ -55,7 +56,7 @@ public class VideoService(
         await PublishProcessVideoCommandAsync(new ProcessVideoCommand
         {
             VideoId = videoId,
-            BucketName = "video-storage",  // ✅ Жёстко задано, т.к. это константа
+            BucketName = "video-storage",
             ObjectName = $"{videoId}/{fileName}",
             OriginalFileName = fileName,
             TotalChunks = totalChunks,
@@ -63,8 +64,6 @@ public class VideoService(
         });
 
         _logger.LogInformation("Published command in {Elapsed}ms", stopwatch.ElapsedMilliseconds);
-        _logger.LogInformation("Upload completed for video {VideoId}, command sent to Worker", videoId);
-
         return metadata;
     }
 

@@ -6,12 +6,11 @@ using WebApp.Services;
 
 namespace WebApp.Controllers;
 
-// ✅ ДОБАВЬТЕ: явный маршрут для контроллера
 [Route("[controller]")]
 public class VideosController(
-    IFileServiceClient fileService, 
-    IVideoService videoService, 
-    IVideoProgressCache progressCache, 
+    IFileServiceClient fileService,
+    IVideoService videoService,
+    IVideoProgressCache progressCache,
     ILogger<VideosController> logger) : Controller
 {
     private readonly IFileServiceClient _fileService = fileService;
@@ -19,7 +18,9 @@ public class VideosController(
     private readonly IVideoProgressCache _progressCache = progressCache;
     private readonly ILogger<VideosController> _logger = logger;
 
-    // ✅ ИСПРАВЛЕНО: явный маршрут для GET
+    private const string VideoStorageBucket = "video-storage";
+    private const string VideoHlsBucket = "video-hls";
+
     [HttpGet("Upload")]
     public IActionResult Upload()
     {
@@ -28,7 +29,7 @@ public class VideosController(
         return View();
     }
 
-    // ✅ ИСПРАВЛЕНО: явный маршрут
+    // ✅ ИСПРАВЛЕНО: используем новый API FileService
     [HttpPost("InitUpload")]
     [Consumes("application/json")]
     [Produces("application/json")]
@@ -39,15 +40,37 @@ public class VideosController(
 
         try
         {
-            var response = await _fileService.InitUploadAsync(request);
+            // ✅ Генерируем videoId
+            var videoId = Guid.NewGuid();
 
-            if (response == null)
+            // ✅ Формируем имена объектов для чанков
+            var chunkObjectNames = Enumerable.Range(0, request.TotalChunks)
+                .Select(i => $"{videoId}/chunks/chunk_{i:D6}")
+                .ToList();
+
+            // ✅ Запрашиваем presigned URLs у FileService
+            var uploadUrls = await _fileService.GetPresignedUploadUrlsAsync(
+                chunkObjectNames,
+                VideoStorageBucket,
+                "application/octet-stream",
+                expirySeconds: 3600);
+
+            // ✅ Формируем ответ
+            var response = new InitUploadResponse
             {
-                _logger.LogError("InitUploadAsync returned null");
-                return BadRequest(new { error = "Failed to initialize upload" });
-            }
+                VideoId = videoId,
+                TotalChunks = request.TotalChunks,
+                ChunkSize = request.ChunkSize,
+                UploadUrls = [.. uploadUrls.Select((url, index) => new ChunkUploadUrlDto
+                {
+                    ChunkIndex = index,
+                    UploadUrl = url.Value
+                })]
+            };
 
-            _logger.LogInformation("InitUpload succeeded: VideoId={VideoId}", response.VideoId);
+            _logger.LogInformation("InitUpload succeeded: VideoId={VideoId}, {Count} URLs generated",
+                videoId, uploadUrls.Count);
+
             return Ok(response);
         }
         catch (Exception ex)
@@ -57,7 +80,6 @@ public class VideosController(
         }
     }
 
-    // ✅ ИСПРАВЛЕНО: явный маршрут
     [HttpPost("CompleteUpload")]
     [Consumes("application/json")]
     [Produces("application/json")]
@@ -65,12 +87,12 @@ public class VideosController(
     {
         try
         {
-            // ✅ Вызываем VideoService в WebApp (не FileService!)
+            // ✅ Вызываем VideoService в WebApp (публикует в RabbitMQ)
             var metadata = await _videoService.CompleteUploadAsync(
                 request.VideoId,
                 request.FileName,
                 request.TotalChunks);
-            
+
             return Ok(new { success = true, videoId = metadata.VideoId });
         }
         catch (Exception ex)
@@ -85,12 +107,10 @@ public class VideosController(
     {
         try
         {
-            // ✅ Используем кэш прогресса вместо FileService
             var progress = _progressCache.GetProgress(videoId);
 
             if (progress == null)
             {
-                // Если прогресса нет — показываем страницу с ожиданием
                 ViewBag.VideoId = videoId;
                 ViewBag.HlsPlaylistUrl = null;
                 ViewBag.FileName = "Обработка видео...";
@@ -99,7 +119,7 @@ public class VideosController(
 
             ViewBag.VideoId = videoId;
             ViewBag.HlsPlaylistUrl = progress.HlsPlaylistUrl;
-            ViewBag.FileName = "Видео - " + videoId.ToString();
+            ViewBag.FileName = progress.FileName ?? $"Видео - {videoId.ToString()[..8]}";
             ViewBag.ProgressPercentage = progress.ProgressPercentage;
             ViewBag.Status = (int)progress.Status;
 
@@ -148,15 +168,49 @@ public class VideosController(
             });
         }
     }
-    // ✅ ИСПРАВЛЕНО: явный маршрут для Index
+
+    // ✅ ИСПРАВЛЕНО: используем новый API FileService
     [HttpGet("")]
     [HttpGet("Index")]
     public async Task<IActionResult> Index()
     {
         try
         {
-            var videos = await _fileService.GetAllVideosAsync();
-            return View(videos);
+            // ✅ Получаем список HLS объектов
+            var hlsObjects = await _fileService.ListObjectsAsync(VideoHlsBucket, recursive: true);
+
+            // ✅ Группируем по videoId (ищем playlist.m3u8)
+            var videoGroups = hlsObjects
+                .Where(o => o.Key.EndsWith("/hls/playlist.m3u8"))
+                .Select(o => o.Key.Split('/').First())
+                .Where(id => Guid.TryParse(id, out _))
+                .Distinct()
+                .ToList();
+
+            var videos = new List<VideoInfoDto>();
+
+            foreach (var videoIdStr in videoGroups)
+            {
+                if (Guid.TryParse(videoIdStr, out var videoId))
+                {
+                    var playlistObject = hlsObjects.FirstOrDefault(o => o.Key == $"{videoId}/hls/playlist.m3u8");
+
+                    if (playlistObject != null)
+                    {
+                        videos.Add(new VideoInfoDto
+                        {
+                            VideoId = videoId,
+                            FileName = $"Video_{videoId.ToString()[..8]}",
+                            HlsPlaylistUrl = $"{videoId}/hls/playlist.m3u8",
+                            Status = "Completed",
+                            CreatedAt = playlistObject.LastModified
+                        });
+                    }
+                }
+            }
+
+            _logger.LogInformation("Found {Count} videos", videos.Count);
+            return View(videos.OrderByDescending(v => v.CreatedAt).ToList());
         }
         catch (Exception ex)
         {
